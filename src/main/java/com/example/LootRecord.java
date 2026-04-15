@@ -1,10 +1,6 @@
 package com.example;
 
-import net.runelite.client.game.ItemStack;
-
-import java.util.Collection;
 import java.util.List;
-import java.util.stream.Collectors;
 
 public class LootRecord {
     // Name of source
