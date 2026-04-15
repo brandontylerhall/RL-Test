@@ -13,6 +13,7 @@ import net.runelite.client.game.ItemManager;
 import net.runelite.client.plugins.Plugin;
 import net.runelite.client.plugins.PluginDescriptor;
 import net.runelite.client.events.NpcLootReceived;
+import net.runelite.client.plugins.loottracker.LootReceived;
 
 import javax.inject.Inject;
 import java.util.List;
@@ -26,16 +27,28 @@ public class LootLoggerPlugin extends Plugin {
     @Inject
     private ItemManager itemManager;
 
+    @Inject
+    private java.util.concurrent.ScheduledExecutorService executor;
+
     // Gson instance for JSON serialization
     private final Gson compactGson = new Gson(); // For the actual file
     private final Gson prettyGson = new GsonBuilder().setPrettyPrinting().create(); // For your debug chat/logs
+
+    private java.io.FileWriter writer;
 
     // =========================
     //    START UP PROCEDURE
     // =========================
     @Override
-    protected void startUp() {
-        log.info("=== PLUGIN RELOADED ===");
+    protected void startUp() throws Exception {
+        // TODO: uncomment this when comfortable; this saves
+        //  to the hidden .runelite folder
+//        java.io.File logFIle = new java.io.File(RuneLite.RUNELITE_DIR, "loot_log.jsonl");
+        // TODO: remove this when comfortable
+        java.io.File logFIle = new java.io.File("loot_log.jsonl");
+
+        writer = new java.io.FileWriter(logFIle, true);
+
     }
 
     // =========================
@@ -69,17 +82,43 @@ public class LootLoggerPlugin extends Plugin {
 
         event.getItems().forEach(item -> {
             String itemName = itemManager.getItemComposition(item.getId()).getName();
-            String lootMessage = " - " + itemName + " x" + item.getQuantity();
+            String lootMsg = " - " + itemName + " x" + item.getQuantity();
 
             client.addChatMessage(
                     ChatMessageType.GAMEMESSAGE,
                     "",
-                    lootMessage,
+                    lootMsg,
                     null
             );
         });
 
         LootRecord record = new LootRecord(sourceName, xCoord, yCoord, planeCoord, items);
-        log.info("JSON Output: {}", compactGson.toJson(record));
+        executor.execute(() -> writeToFile(record));
+    }
+
+    // =========================
+    //  WRITE LOOT DATA TO FILE
+    // =========================
+    private void writeToFile(LootRecord record) {
+        try {
+            // synchronized ensures that if two things die at once,
+            // their JSON lines don't get tangled together.
+            synchronized (writer) {
+                writer.write(compactGson.toJson(record) + "\n");
+                writer.flush();
+            }
+        } catch (java.io.IOException e) {
+            log.error("Error writing to file", e);
+        }
+    }
+
+    // =========================
+    //    SHUT DOWN PROCEDURES
+    // =========================
+    @Override
+    public void shutDown() throws Exception {
+        if (writer != null) {
+            writer.close();
+        }
     }
 }
