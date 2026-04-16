@@ -115,12 +115,28 @@ public class LootLoggerPlugin extends Plugin {
         }
 
         gameMsg(String.format("Current Animation ID: %d", animId));
-
     }
 
-    // ======================================
-    //    RESOURCE NODE EVENT / BANKING LOGIC
-    // ======================================
+
+    private void handleGatheringGains(int itemId, int qty) {
+        // 1. Get the source based on animation memory
+        String sourceName = "Unknown/Pickup";
+
+        if (lastActiveAnimation == 621) sourceName = "Small Net Fishing";
+        else if (lastActiveAnimation == 879) sourceName = "Woodcutting";
+
+        if (client.getLocalPlayer().getAnimation() == -1 && lastActiveAnimation == -1) {
+            return;
+        }
+
+        String resourceName = itemManager.getItemComposition(itemId).getName();
+
+        gameMsg(String.format("Resource gained from %s: %s. Qty: %d", sourceName, resourceName, qty));
+    }
+
+    //////////////////////////////////////////
+    // RESOURCE NODE EVENT / BANKING LOGIC ///
+    //////////////////////////////////////////
     @Subscribe
     public void onItemContainerChanged(ItemContainerChanged event) {
         // 93 is the ID for the Inventory container
@@ -135,11 +151,11 @@ public class LootLoggerPlugin extends Plugin {
 
         // Loop through all 28 inv slots
         for (int i = 0; i < 28; i++) {
-            int newId = currentInventory[i].getId();
-            int newQty = currentInventory[i].getQuantity();
+            int newId = (i < currentInventory.length) ? currentInventory[i].getId() : -1;
+            int newQty = (i < currentInventory.length) ? currentInventory[i].getQuantity() : 0;
 
-            int oldId = previousInventory[i].getId();
-            int oldQty = previousInventory[i].getQuantity();
+            int oldId = (i < previousInventory.length) ? previousInventory[i].getId() : -1;
+            int oldQty = (i < previousInventory.length) ? previousInventory[i].getQuantity() : 0;
 
             String oldName = itemManager.getItemComposition(oldId).getName();
             String newName = itemManager.getItemComposition(newId).getName();
@@ -163,7 +179,7 @@ public class LootLoggerPlugin extends Plugin {
                     gameMsg(String.format("Withdrawal (Slot %d): %s x%d", i + 1, newName, newQty));
                 }
             }
-
+//
             // CASE 2: Same item, but quantity changed (stackables)
             else {
                 int diff = newQty - oldQty;
@@ -182,6 +198,17 @@ public class LootLoggerPlugin extends Plugin {
                 }
             }
 
+            // Determine if this is a "Gain" we care about for the database
+//            if (newId != -1 && (newId != oldId || newQty > oldQty)) {
+//                int amount = (newId == oldId) ? (newQty - oldQty) : newQty;
+//
+//                // Only log to file if we aren't banking
+//                if (!isBanking) {
+//                    handleGatheringGains(newId, amount);
+//                } else {
+//                    gameMsg("Withdrawal detected, skipping log...");
+//                }
+//            }
             // This is where you'd call your writeToFile logic!
         }
         previousInventory = currentInventory.clone();
