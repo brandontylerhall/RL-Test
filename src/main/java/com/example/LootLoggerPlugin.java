@@ -16,7 +16,6 @@ import net.runelite.client.events.NpcLootReceived;
 import net.runelite.client.plugins.loottracker.LootReceived;
 
 import javax.inject.Inject;
-import java.util.Arrays;
 import java.util.List;
 
 @Slf4j
@@ -37,6 +36,14 @@ public class LootLoggerPlugin extends Plugin {
 
     private java.io.FileWriter writer;
     private int lastActiveAnimation = -1;
+    private Item[] previousInventory = new Item[28];
+
+    public void gameMsg(String msg) {
+        client.addChatMessage(ChatMessageType.GAMEMESSAGE,
+                "",
+                msg,
+                null);
+    }
 
     // =========================
     //    START UP PROCEDURE
@@ -51,6 +58,9 @@ public class LootLoggerPlugin extends Plugin {
 
         writer = new java.io.FileWriter(logFIle, true);
 
+        for (int i = 0; i < 28; i++) {
+            previousInventory[i] = new Item(-1, 0);
+        }
     }
 
     // =========================
@@ -70,31 +80,24 @@ public class LootLoggerPlugin extends Plugin {
         int planeCoord = npc.getWorldLocation().getPlane();
 
         // get items
-        List<DroppedItem> items = event.getItems().stream()
-                .map(item -> new DroppedItem(item.getId(), item.getQuantity()))
+        List<DroppedItem> items = event.getItems()
+                .stream()
+                .map(item -> new DroppedItem(
+                        item.getId(), item.getQuantity())
+                )
                 .collect(java.util.stream.Collectors.toList());
 
-        String killMessage = "Loot from: " + sourceName + " at " + location + "\n";
-        client.addChatMessage(
-                ChatMessageType.GAMEMESSAGE,
-                "",
-                killMessage,
-                null
-        );
+        gameMsg(String.format("Loot from: %s at %d", sourceName, location));
 
         event.getItems().forEach(item -> {
             String itemName = itemManager.getItemComposition(item.getId()).getName();
-            String lootMsg = " - " + itemName + " x" + item.getQuantity();
+            int itemQty = item.getQuantity();
 
-            client.addChatMessage(
-                    ChatMessageType.GAMEMESSAGE,
-                    "",
-                    lootMsg,
-                    null
-            );
+            gameMsg(String.format("- %s x %d", itemName, itemQty));
         });
 
         LootRecord record = new LootRecord(sourceName, xCoord, yCoord, planeCoord, items);
+
         executor.execute(() -> writeToFile(record));
     }
 
@@ -105,30 +108,83 @@ public class LootLoggerPlugin extends Plugin {
     public void onAnimationChanged(AnimationChanged event) {
         if (event.getActor() != client.getLocalPlayer()) return;
 
-        int anim = client.getLocalPlayer().getAnimation();
-        if (anim != -1) {
-            lastActiveAnimation = anim;
+        int animId = client.getLocalPlayer().getAnimation();
+
+        if (animId != -1) {
+            lastActiveAnimation = animId;
         }
+
+        gameMsg(String.format("Current Animation ID: %d", animId));
+
     }
 
-    // =========================
-    //    RESOURCE NODE EVENT
-    // =========================
+    // ======================================
+    //    RESOURCE NODE EVENT / BANKING LOGIC
+    // ======================================
     @Subscribe
     public void onItemContainerChanged(ItemContainerChanged event) {
         // 93 is the ID for the Inventory container
-        if (event.getContainerId() == 93) {
-            client.addChatMessage(ChatMessageType.GAMEMESSAGE, "", "Inventory changed! Checking for animation...", null);
+        if (event.getContainerId() != 93) return;
 
-            int animationId = client.getLocalPlayer().getAnimation();
+        ////////////////////// bank-check logic ///////////////////////////
+        ItemContainer bankContainer = client.getItemContainer(InventoryID.BANK);
+        boolean isBanking = (bankContainer != null);
+        //////////////////////////////////////////////////////////////////
 
-            client.addChatMessage(ChatMessageType.GAMEMESSAGE, "", "Animation ID: " + animationId, null);
+        Item[] currentInventory = event.getItemContainer().getItems();
 
-            String items = Arrays.toString(event.getItemContainer().getItems());
+        // Loop through all 28 inv slots
+        for (int i = 0; i < 28; i++) {
+            int newId = currentInventory[i].getId();
+            int newQty = currentInventory[i].getQuantity();
 
-            client.addChatMessage(ChatMessageType.GAMEMESSAGE, "", "Items: " + items, null);
+            int oldId = previousInventory[i].getId();
+            int oldQty = previousInventory[i].getQuantity();
 
+            String oldName = itemManager.getItemComposition(oldId).getName();
+            String newName = itemManager.getItemComposition(newId).getName();
+
+            // SKIP if nothing changed in this slot
+            if (newId == oldId && newQty == oldQty) continue;
+            // CASE 1: Item ID changed (slot was replaced)
+            if (newId != oldId) {
+                // If there was something there before and the bank is not open, it's a loss...
+                if (oldId != -1 && !isBanking) {
+                    gameMsg(String.format("Loss (Slot %d): %s x%d", i + 1, oldName, oldQty));
+                    // ...otherwise, it's a deposit
+                } else if (oldId != -1) {
+                    gameMsg(String.format("Deposit (Slot %d): %s x%d", i + 1, oldName, oldQty));
+                }
+                // If there is something here now and the bank is not open, it's a gain...
+                if (newId != -1 && !isBanking) {
+                    gameMsg(String.format("Gain (Slot %d): %s x%d", i + 1, newName, newQty));
+                    // ...otherwise, it's a withdrawal
+                } else if (newId != -1) {
+                    gameMsg(String.format("Withdrawal (Slot %d): %s x%d", i + 1, newName, newQty));
+                }
+            }
+
+            // CASE 2: Same item, but quantity changed (stackables)
+            else {
+                int diff = newQty - oldQty;
+                if (!isBanking) {
+                    if (diff > 0) {
+                        gameMsg(String.format("Gain (Slot %d): %s x%d", i + 1, newName, diff));
+                    } else {
+                        gameMsg(String.format("Loss (Slot %d): %s x%d", i + 1, newName, Math.abs(diff)));
+                    }
+                } else {
+                    if (diff > 0) {
+                        gameMsg(String.format("Withdrawal (Slot %d): %s x%d. New total: %d", i + 1, newName, diff, newQty));
+                    } else {
+                        gameMsg(String.format("Deposit (Slot %d): %s x%d. New total: %d", i + 1, newName, Math.abs(diff), newQty));
+                    }
+                }
+            }
+
+            // This is where you'd call your writeToFile logic!
         }
+        previousInventory = currentInventory.clone();
     }
 
     // =========================
@@ -136,15 +192,12 @@ public class LootLoggerPlugin extends Plugin {
     // =========================
     @Subscribe
     public void onLootReceived(LootReceived event) {
-        String message = String.format("Loot: %s | Stacks: %d | Type: %s",
-                event.getName(), event.getItems().size(), event.getType());
-
-        client.addChatMessage(ChatMessageType.GAMEMESSAGE, "", message, null);
-        log.info(message);
+        gameMsg(String.format("Loot: %s | Stacks: %d | Type: %s",
+                event.getName(), event.getItems().size(), event.getType()));
     }
 
     // =========================
-    //  WRITE LOOT DATA TO FILE
+    //    WRITE DATA TO FILE
     // =========================
     private void writeToFile(LootRecord record) {
         try {
