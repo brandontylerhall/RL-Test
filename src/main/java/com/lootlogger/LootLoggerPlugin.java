@@ -1,7 +1,8 @@
-package com.example;
+package com.lootlogger;
 
-import com.google.gson.Gson;
-import com.google.gson.GsonBuilder;
+import com.lootlogger.data.DroppedItem;
+import com.lootlogger.data.LootRecord;
+import com.lootlogger.io.LootWriter;
 
 import lombok.extern.slf4j.Slf4j;
 import net.runelite.api.*;
@@ -9,15 +10,14 @@ import net.runelite.api.coords.WorldPoint;
 import net.runelite.api.events.AnimationChanged;
 import net.runelite.api.events.CommandExecuted;
 import net.runelite.api.events.ItemContainerChanged;
+import net.runelite.api.events.MenuOptionClicked;
 import net.runelite.client.eventbus.Subscribe;
 import net.runelite.client.game.ItemManager;
 import net.runelite.client.plugins.Plugin;
 import net.runelite.client.plugins.PluginDescriptor;
 import net.runelite.client.events.NpcLootReceived;
-import net.runelite.client.plugins.loottracker.LootReceived;
 
 import javax.inject.Inject;
-import java.util.Arrays;
 import java.util.List;
 
 @Slf4j
@@ -32,18 +32,17 @@ public class LootLoggerPlugin extends Plugin {
     @Inject
     private java.util.concurrent.ScheduledExecutorService executor;
 
-    // Gson instance for JSON serialization
-    private final Gson compactGson = new Gson();
+    // ---> NEW: Our dedicated file writer class <---
+    private LootWriter lootWriter;
 
-    private java.io.FileWriter writer;
+    // DEBUG VARIABLES //
     private int lastActiveAnimation = -1;
+    private String lastMenuOptionClicked = "";
     private Item[] previousInventory = new Item[28];
+    ///////////////////////////////
 
     public void gameMsg(String msg) {
-        client.addChatMessage(ChatMessageType.GAMEMESSAGE,
-                "",
-                msg,
-                null);
+        client.addChatMessage(ChatMessageType.GAMEMESSAGE, "", msg, null);
     }
 
     private static final java.util.Map<Integer, String> SOURCE_MAP = java.util.Map.ofEntries(
@@ -57,26 +56,30 @@ public class LootLoggerPlugin extends Plugin {
     );
 
     // =========================
-    //    START UP PROCEDURE
+    //    START UP / SHUT DOWN
     // =========================
     @Override
     protected void startUp() throws Exception {
-        // TODO: uncomment this when comfortable; this saves
-        //  to the hidden .runelite folder
-//        java.io.File logFIle = new java.io.File(RuneLite.RUNELITE_DIR, "loot_log.jsonl");
-        // TODO: remove this when comfortable
-        java.io.File logFIle = new java.io.File("loot_log.jsonl");
-
-        writer = new java.io.FileWriter(logFIle, true);
+        lootWriter = new LootWriter();
+        lootWriter.init(); // Tell the writer to open the file
 
         for (int i = 0; i < 28; i++) {
             previousInventory[i] = new Item(-1, 0);
         }
     }
 
+    @Override
+    public void shutDown() throws Exception {
+        if (lootWriter != null) {
+            lootWriter.close();
+        }
+    }
+
+    // =========================
+    //      DEBUG COMMAND
+    // =========================
     @Subscribe
     public void onCommandExecuted(CommandExecuted event) {
-        // Usage: Type ::status in game chat
         if (event.getCommand().equals("status")) {
             int currentAnim = client.getLocalPlayer().getAnimation();
             WorldPoint loc = client.getLocalPlayer().getWorldLocation();
@@ -85,7 +88,7 @@ public class LootLoggerPlugin extends Plugin {
             gameMsg("Current Animation: " + currentAnim);
             gameMsg("Last Saved Animation: " + lastActiveAnimation);
             gameMsg("Location: " + loc.getX() + ", " + loc.getY() + ", " + loc.getPlane());
-            gameMsg("Inventory Memory Size: " + (previousInventory != null ? previousInventory.length : "NULL"));
+            gameMsg(String.format("Last menu option: %s", lastMenuOptionClicked));
         }
     }
 
@@ -95,94 +98,62 @@ public class LootLoggerPlugin extends Plugin {
     @Subscribe
     public void onNpcLootReceived(NpcLootReceived event) {
         NPC npc = event.getNpc();
-
-        // NPC name (e.g., "Goblin", "Cow")
         String sourceName = npc.getName();
-
-        // Exact world coordinates of the NPC
         WorldPoint location = npc.getWorldLocation();
-        int xCoord = npc.getWorldLocation().getX();
-        int yCoord = npc.getWorldLocation().getY();
-        int planeCoord = npc.getWorldLocation().getPlane();
 
-        // get items
-        List<DroppedItem> items = event.getItems()
-                .stream()
-                .map(item -> new DroppedItem(
-                        item.getId(), item.getQuantity())
-                )
+        List<DroppedItem> items = event.getItems().stream()
+                .map(item -> new DroppedItem(item.getId(), item.getQuantity()))
                 .collect(java.util.stream.Collectors.toList());
 
-        gameMsg(String.format("Loot from: %s at %d", sourceName, location));
+        LootRecord record = new LootRecord(sourceName, location.getX(), location.getY(), location.getPlane(), items);
 
-        event.getItems().forEach(item -> {
-            String itemName = itemManager.getItemComposition(item.getId()).getName();
-            int itemQty = item.getQuantity();
-
-            gameMsg(String.format("- %s x %d", itemName, itemQty));
-        });
-
-        LootRecord record = new LootRecord(sourceName, xCoord, yCoord, planeCoord, items);
-
-        executor.execute(() -> writeToFile(record));
+        // Pass the record to the writer via the executor
+        executor.execute(() -> lootWriter.writeToFile(record));
     }
 
     // =========================
-    //    ANIMATION CHECKER
+    //    ANIMATION & MENU EVENTS
     // =========================
     @Subscribe
     public void onAnimationChanged(AnimationChanged event) {
         if (event.getActor() != client.getLocalPlayer()) return;
-
         int animId = client.getLocalPlayer().getAnimation();
-
         if (animId != -1) {
             lastActiveAnimation = animId;
         }
-
-        gameMsg(String.format("Current Animation ID: %d", animId));
     }
 
+    @Subscribe
+    public void onMenuOptionClicked(MenuOptionClicked event) {
+        lastMenuOptionClicked = event.getMenuOption();
+    }
 
+    // =========================
+    //    RESOURCE NODE LOGIC
+    // =========================
     private void handleGatheringGains(int itemId, int qty) {
-        // 1. Filter out idle moves
         if (client.getLocalPlayer().getAnimation() == -1 && lastActiveAnimation == -1) return;
 
-        // 2. Lookup source (default to Unknown if not in map)
         String sourceName = SOURCE_MAP.getOrDefault(lastActiveAnimation, "Unknown/Pickup");
-
-        // 3. Log and write
         String resourceName = itemManager.getItemComposition(itemId).getName();
-
         WorldPoint wp = client.getLocalPlayer().getWorldLocation();
-        int x = wp.getX();
-        int y = wp.getY();
-        int plane = wp.getPlane();
 
         gameMsg(String.format("Resource gained from %s: %s. Qty: %d", sourceName, resourceName, qty));
 
         List<DroppedItem> items = List.of(new DroppedItem(itemId, qty));
-        LootRecord record = new LootRecord(sourceName, x, y, plane, items);
+        LootRecord record = new LootRecord(sourceName, wp.getX(), wp.getY(), wp.getPlane(), items);
 
-        writeToFile(record);
+        executor.execute(() -> lootWriter.writeToFile(record));
     }
 
-    /////////////////////////////////////////////////////////////////////////
-    ////////////////// RESOURCE NODE EVENT / BANKING LOGIC //////////////////
-    /////////////////////////////////////////////////////////////////////////
     @Subscribe
     public void onItemContainerChanged(ItemContainerChanged event) {
-        // 93 is the ID for the Inventory container
         if (event.getContainerId() != 93) return;
 
-        //////////////////////// BANK-CHECK LOGIC /////////////////////////////
-        ItemContainer bankContainer = client.getItemContainer(InventoryID.BANK);
+        ItemContainer bankContainer = client.getItemContainer(95);
         boolean isBanking = (bankContainer != null);
-        //////////////////////////////////////////////////////////////////////
-
         Item[] currentInventory = event.getItemContainer().getItems();
 
-        // Loop through all 28 inv slots
         for (int i = 0; i < 28; i++) {
             int newId = (i < currentInventory.length) ? currentInventory[i].getId() : -1;
             int newQty = (i < currentInventory.length) ? currentInventory[i].getQuantity() : 0;
@@ -193,32 +164,45 @@ public class LootLoggerPlugin extends Plugin {
             String oldName = itemManager.getItemComposition(oldId).getName();
             String newName = itemManager.getItemComposition(newId).getName();
 
-            // SKIP if nothing changed in this slot
             if (newId == oldId && newQty == oldQty) continue;
-            // CASE 1: Item ID changed (slot was replaced)
+
             if (newId != oldId) {
-                // If there was something there before and the bank is not open, it's a loss...
-                if (oldId != -1 && !isBanking) {
+                // player use
+                if (newId == -1) {
+                    if (lastMenuOptionClicked != null && lastMenuOptionClicked.equals("Drop")) {
+                        gameMsg(String.format("You dropped: %s", oldName));
+                    } else if (lastMenuOptionClicked != null && lastMenuOptionClicked.equals("Bury")) {
+                        gameMsg(String.format("You buried: %s", oldName));
+                        // TODO: probably better to have a map of various consume options
+                    } else if (lastMenuOptionClicked != null && lastMenuOptionClicked.equals("Drink")) {
+                        gameMsg(String.format("You drank: %s", oldName));
+                    }
+                }
+                // other stuff
+                else if (oldId != -1 && !isBanking) {
+                    if (client.getLocalPlayer().getAnimation() == -1) {
+                        gameMsg(String.format("swapped %s and %s", oldName, newName));
+                        previousInventory = currentInventory.clone();
+                        continue;
+                    }
                     gameMsg(String.format("Loss (Slot %d): %s x%d", i + 1, oldName, oldQty));
-                    // ...otherwise, it's a deposit
                 } else if (oldId != -1) {
                     gameMsg(String.format("Deposit (Slot %d): %s x%d", i + 1, oldName, oldQty));
                 }
-                // If there is something here now and the bank is not open, it's a gain...
+
+                // TODO: figure out how to check for moving an item to an empty slot
                 if (newId != -1 && !isBanking) {
                     handleGatheringGains(newId, newQty);
-                    // ...otherwise, it's a withdrawal
                 } else if (newId != -1) {
                     gameMsg(String.format("Withdrawal (Slot %d): %s x%d", i + 1, newName, newQty));
                 }
-            }
-            // CASE 2: Same item, but quantity changed (stackables)
-            else {
+            } else {
                 int diff = newQty - oldQty;
                 if (!isBanking) {
                     if (diff > 0) {
                         gameMsg(String.format("Gain (Slot %d): %s x%d", i + 1, newName, diff));
                     } else {
+                        // TODO: add logic that checks if the loss is due to something like fishing (bait)
                         gameMsg(String.format("Loss (Slot %d): %s x%d", i + 1, newName, Math.abs(diff)));
                     }
                 } else {
@@ -231,40 +215,5 @@ public class LootLoggerPlugin extends Plugin {
             }
         }
         previousInventory = currentInventory.clone();
-    }
-
-    // =========================
-    //        IDK YET LOL
-    // =========================
-    @Subscribe
-    public void onLootReceived(LootReceived event) {
-        gameMsg(String.format("Loot: %s | Stacks: %d | Type: %s",
-                event.getName(), event.getItems().size(), event.getType()));
-    }
-
-    // =========================
-    //    WRITE DATA TO FILE
-    // =========================
-    private void writeToFile(LootRecord record) {
-        try {
-            // synchronized ensures that if two things die at once,
-            // their JSON lines don't get tangled together.
-            synchronized (writer) {
-                writer.write(compactGson.toJson(record) + "\n");
-                writer.flush();
-            }
-        } catch (java.io.IOException e) {
-            log.error("Error writing to file", e);
-        }
-    }
-
-    // =========================
-    //    SHUT DOWN PROCEDURES
-    // =========================
-    @Override
-    public void shutDown() throws Exception {
-        if (writer != null) {
-            writer.close();
-        }
     }
 }
