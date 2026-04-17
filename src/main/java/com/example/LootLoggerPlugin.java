@@ -33,8 +33,7 @@ public class LootLoggerPlugin extends Plugin {
     private java.util.concurrent.ScheduledExecutorService executor;
 
     // Gson instance for JSON serialization
-    private final Gson compactGson = new Gson(); // For the actual file
-    private final Gson prettyGson = new GsonBuilder().setPrettyPrinting().create(); // For your debug chat/logs
+    private final Gson compactGson = new Gson();
 
     private java.io.FileWriter writer;
     private int lastActiveAnimation = -1;
@@ -46,6 +45,16 @@ public class LootLoggerPlugin extends Plugin {
                 msg,
                 null);
     }
+
+    private static final java.util.Map<Integer, String> SOURCE_MAP = java.util.Map.ofEntries(
+            java.util.Map.entry(879, "Woodcutting"), // Bronze axe
+            java.util.Map.entry(877, "Woodcutting"), // Iron axe
+            java.util.Map.entry(875, "Woodcutting"), // Steel axe
+            java.util.Map.entry(625, "Mining"),      // Bronze pick
+            java.util.Map.entry(626, "Mining"),      // Iron pick
+            java.util.Map.entry(627, "Mining"),      // Steel pick
+            java.util.Map.entry(621, "Small Net Fishing")
+    );
 
     // =========================
     //    START UP PROCEDURE
@@ -136,22 +145,13 @@ public class LootLoggerPlugin extends Plugin {
 
 
     private void handleGatheringGains(int itemId, int qty) {
-        Integer[] woodcuttingIds = {875, 877, 879};
-        Integer[] miningIds = {625, 626, 627};
+        // 1. Filter out idle moves
+        if (client.getLocalPlayer().getAnimation() == -1 && lastActiveAnimation == -1) return;
 
-        // 1. Get the source based on animation memory
-        String sourceName = "Unknown/Pickup";
+        // 2. Lookup source (default to Unknown if not in map)
+        String sourceName = SOURCE_MAP.getOrDefault(lastActiveAnimation, "Unknown/Pickup");
 
-        if (Arrays.asList(woodcuttingIds).contains(lastActiveAnimation)) sourceName = "Woodcutting";
-
-        if (Arrays.asList(miningIds).contains(lastActiveAnimation)) sourceName = "Mining";
-
-        if (lastActiveAnimation == 621) sourceName = "Small Net Fishing";
-
-        if (client.getLocalPlayer().getAnimation() == -1 && lastActiveAnimation == -1) {
-            return;
-        }
-
+        // 3. Log and write
         String resourceName = itemManager.getItemComposition(itemId).getName();
 
         WorldPoint wp = client.getLocalPlayer().getWorldLocation();
@@ -167,18 +167,18 @@ public class LootLoggerPlugin extends Plugin {
         writeToFile(record);
     }
 
-    //////////////////////////////////////////
-    // RESOURCE NODE EVENT / BANKING LOGIC ///
-    //////////////////////////////////////////
+    /////////////////////////////////////////////////////////////////////////
+    ////////////////// RESOURCE NODE EVENT / BANKING LOGIC //////////////////
+    /////////////////////////////////////////////////////////////////////////
     @Subscribe
     public void onItemContainerChanged(ItemContainerChanged event) {
         // 93 is the ID for the Inventory container
         if (event.getContainerId() != 93) return;
 
-        ////////////////////// bank-check logic ///////////////////////////
+        //////////////////////// BANK-CHECK LOGIC /////////////////////////////
         ItemContainer bankContainer = client.getItemContainer(InventoryID.BANK);
         boolean isBanking = (bankContainer != null);
-        //////////////////////////////////////////////////////////////////
+        //////////////////////////////////////////////////////////////////////
 
         Item[] currentInventory = event.getItemContainer().getItems();
 
@@ -212,7 +212,6 @@ public class LootLoggerPlugin extends Plugin {
                     gameMsg(String.format("Withdrawal (Slot %d): %s x%d", i + 1, newName, newQty));
                 }
             }
-
             // CASE 2: Same item, but quantity changed (stackables)
             else {
                 int diff = newQty - oldQty;
@@ -230,19 +229,6 @@ public class LootLoggerPlugin extends Plugin {
                     }
                 }
             }
-
-            // Determine if this is a "Gain" we care about for the database
-//            if (newId != -1 && (newId != oldId || newQty > oldQty)) {
-//                int amount = (newId == oldId) ? (newQty - oldQty) : newQty;
-//
-//                // Only log to file if we aren't banking
-//                if (!isBanking) {
-//                    handleGatheringGains(newId, amount);
-//                } else {
-//                    gameMsg("Withdrawal detected, skipping log...");
-//                }
-//            }
-            // This is where you'd call your writeToFile logic!
         }
         previousInventory = currentInventory.clone();
     }
