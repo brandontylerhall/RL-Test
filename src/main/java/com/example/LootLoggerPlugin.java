@@ -171,6 +171,7 @@ public class LootLoggerPlugin extends Plugin {
                 } else if (oldId != -1) {
                     gameMsg(String.format("Deposit (Slot %d): %s x%d", i + 1, oldName, oldQty));
                 }
+
                 // If there is something here now and the bank is not open, it's a gain...
                 if (newId != -1 && !isBanking) {
                     gameMsg(String.format("Gain (Slot %d): %s x%d", i + 1, newName, newQty));
