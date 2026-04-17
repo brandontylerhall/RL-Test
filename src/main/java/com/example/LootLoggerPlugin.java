@@ -7,6 +7,7 @@ import lombok.extern.slf4j.Slf4j;
 import net.runelite.api.*;
 import net.runelite.api.coords.WorldPoint;
 import net.runelite.api.events.AnimationChanged;
+import net.runelite.api.events.CommandExecuted;
 import net.runelite.api.events.ItemContainerChanged;
 import net.runelite.client.eventbus.Subscribe;
 import net.runelite.client.game.ItemManager;
@@ -16,6 +17,7 @@ import net.runelite.client.events.NpcLootReceived;
 import net.runelite.client.plugins.loottracker.LootReceived;
 
 import javax.inject.Inject;
+import java.util.Arrays;
 import java.util.List;
 
 @Slf4j
@@ -60,6 +62,21 @@ public class LootLoggerPlugin extends Plugin {
 
         for (int i = 0; i < 28; i++) {
             previousInventory[i] = new Item(-1, 0);
+        }
+    }
+
+    @Subscribe
+    public void onCommandExecuted(CommandExecuted event) {
+        // Usage: Type ::status in game chat
+        if (event.getCommand().equals("status")) {
+            int currentAnim = client.getLocalPlayer().getAnimation();
+            WorldPoint loc = client.getLocalPlayer().getWorldLocation();
+
+            gameMsg("--- DEBUG STATUS ---");
+            gameMsg("Current Animation: " + currentAnim);
+            gameMsg("Last Saved Animation: " + lastActiveAnimation);
+            gameMsg("Location: " + loc.getX() + ", " + loc.getY() + ", " + loc.getPlane());
+            gameMsg("Inventory Memory Size: " + (previousInventory != null ? previousInventory.length : "NULL"));
         }
     }
 
@@ -119,11 +136,17 @@ public class LootLoggerPlugin extends Plugin {
 
 
     private void handleGatheringGains(int itemId, int qty) {
+        Integer[] woodcuttingIds = {875, 877, 879};
+        Integer[] miningIds = {625, 626, 627};
+
         // 1. Get the source based on animation memory
         String sourceName = "Unknown/Pickup";
 
+        if (Arrays.asList(woodcuttingIds).contains(lastActiveAnimation)) sourceName = "Woodcutting";
+
+        if (Arrays.asList(miningIds).contains(lastActiveAnimation)) sourceName = "Mining";
+
         if (lastActiveAnimation == 621) sourceName = "Small Net Fishing";
-        else if (lastActiveAnimation == 879) sourceName = "Woodcutting";
 
         if (client.getLocalPlayer().getAnimation() == -1 && lastActiveAnimation == -1) {
             return;
@@ -131,7 +154,17 @@ public class LootLoggerPlugin extends Plugin {
 
         String resourceName = itemManager.getItemComposition(itemId).getName();
 
+        WorldPoint wp = client.getLocalPlayer().getWorldLocation();
+        int x = wp.getX();
+        int y = wp.getY();
+        int plane = wp.getPlane();
+
         gameMsg(String.format("Resource gained from %s: %s. Qty: %d", sourceName, resourceName, qty));
+
+        List<DroppedItem> items = List.of(new DroppedItem(itemId, qty));
+        LootRecord record = new LootRecord(sourceName, x, y, plane, items);
+
+        writeToFile(record);
     }
 
     //////////////////////////////////////////
@@ -171,16 +204,15 @@ public class LootLoggerPlugin extends Plugin {
                 } else if (oldId != -1) {
                     gameMsg(String.format("Deposit (Slot %d): %s x%d", i + 1, oldName, oldQty));
                 }
-
                 // If there is something here now and the bank is not open, it's a gain...
                 if (newId != -1 && !isBanking) {
-                    gameMsg(String.format("Gain (Slot %d): %s x%d", i + 1, newName, newQty));
+                    handleGatheringGains(newId, newQty);
                     // ...otherwise, it's a withdrawal
                 } else if (newId != -1) {
                     gameMsg(String.format("Withdrawal (Slot %d): %s x%d", i + 1, newName, newQty));
                 }
             }
-//
+
             // CASE 2: Same item, but quantity changed (stackables)
             else {
                 int diff = newQty - oldQty;
