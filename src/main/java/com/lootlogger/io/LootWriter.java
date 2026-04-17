@@ -13,7 +13,7 @@ public class LootWriter {
     private final Gson compactGson = new Gson();
     private FileWriter writer;
 
-    public void startUp() throws IOException {
+    public void init() throws IOException {
         File logFile = new File("loot_log.jsonl");
         writer = new FileWriter(logFile, true);
     }
@@ -29,7 +29,7 @@ public class LootWriter {
         }
     }
 
-    public void shutDown() throws IOException {
+    public void close() throws IOException {
         if (writer != null) {
             writer.close();
         }
