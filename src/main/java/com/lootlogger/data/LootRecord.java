@@ -1,4 +1,4 @@
-package com.example;
+package com.lootlogger.data;
 
 import java.util.List;
 
