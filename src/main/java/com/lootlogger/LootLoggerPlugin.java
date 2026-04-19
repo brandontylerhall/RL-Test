@@ -1,9 +1,11 @@
 package com.lootlogger;
 
 import com.lootlogger.data.DroppedItem;
+import com.lootlogger.data.InventoryEvent;
 import com.lootlogger.data.LootRecord;
 import com.lootlogger.io.LootWriter;
 
+import com.lootlogger.util.InventoryProcessor;
 import lombok.extern.slf4j.Slf4j;
 import net.runelite.api.*;
 import net.runelite.api.coords.WorldPoint;
@@ -32,14 +34,15 @@ public class LootLoggerPlugin extends Plugin {
     @Inject
     private java.util.concurrent.ScheduledExecutorService executor;
 
-    // ---> NEW: Our dedicated file writer class <---
+    // ---> NEW: Our dedicated riter class
     private LootWriter lootWriter;
 
     // DEBUG VARIABLES //
     private int lastActiveAnimation = -1;
     private String lastMenuOptionClicked = "";
     private Item[] previousInventory = new Item[28];
-    ///////////////////////////////
+
+    /// ////////////////////////////
 
     public void gameMsg(String msg) {
         client.addChatMessage(ChatMessageType.GAMEMESSAGE, "", msg, null);
@@ -154,66 +157,15 @@ public class LootLoggerPlugin extends Plugin {
         boolean isBanking = (bankContainer != null);
         Item[] currentInventory = event.getItemContainer().getItems();
 
-        for (int i = 0; i < 28; i++) {
-            int newId = (i < currentInventory.length) ? currentInventory[i].getId() : -1;
-            int newQty = (i < currentInventory.length) ? currentInventory[i].getQuantity() : 0;
+        List<InventoryEvent> events = InventoryProcessor.invProcess(previousInventory, currentInventory, isBanking, lastMenuOptionClicked, client.getLocalPlayer().getAnimation());
 
-            int oldId = (i < previousInventory.length) ? previousInventory[i].getId() : -1;
-            int oldQty = (i < previousInventory.length) ? previousInventory[i].getQuantity() : 0;
-
-            String oldName = itemManager.getItemComposition(oldId).getName();
-            String newName = itemManager.getItemComposition(newId).getName();
-
-            if (newId == oldId && newQty == oldQty) continue;
-
-            if (newId != oldId) {
-                // player use
-                if (newId == -1) {
-                    if (lastMenuOptionClicked != null && lastMenuOptionClicked.equals("Drop")) {
-                        gameMsg(String.format("You dropped: %s", oldName));
-                    } else if (lastMenuOptionClicked != null && lastMenuOptionClicked.equals("Bury")) {
-                        gameMsg(String.format("You buried: %s", oldName));
-                        // TODO: probably better to have a map of various consume options
-                    } else if (lastMenuOptionClicked != null && lastMenuOptionClicked.equals("Drink")) {
-                        gameMsg(String.format("You drank: %s", oldName));
-                    }
-                }
-                // other stuff
-                else if (oldId != -1 && !isBanking) {
-                    if (client.getLocalPlayer().getAnimation() == -1) {
-                        gameMsg(String.format("swapped %s and %s", oldName, newName));
-                        previousInventory = currentInventory.clone();
-                        continue;
-                    }
-                    gameMsg(String.format("Loss (Slot %d): %s x%d", i + 1, oldName, oldQty));
-                } else if (oldId != -1) {
-                    gameMsg(String.format("Deposit (Slot %d): %s x%d", i + 1, oldName, oldQty));
-                }
-
-                // TODO: figure out how to check for moving an item to an empty slot
-                if (newId != -1 && !isBanking) {
-                    handleGatheringGains(newId, newQty);
-                } else if (newId != -1) {
-                    gameMsg(String.format("Withdrawal (Slot %d): %s x%d", i + 1, newName, newQty));
-                }
-            } else {
-                int diff = newQty - oldQty;
-                if (!isBanking) {
-                    if (diff > 0) {
-                        gameMsg(String.format("Gain (Slot %d): %s x%d", i + 1, newName, diff));
-                    } else {
-                        // TODO: add logic that checks if the loss is due to something like fishing (bait)
-                        gameMsg(String.format("Loss (Slot %d): %s x%d", i + 1, newName, Math.abs(diff)));
-                    }
-                } else {
-                    if (diff > 0) {
-                        gameMsg(String.format("Withdrawal (Slot %d): %s x%d. New total: %d", i + 1, newName, diff, newQty));
-                    } else {
-                        gameMsg(String.format("Deposit (Slot %d): %s x%d. New total: %d", i + 1, newName, Math.abs(diff), newQty));
-                    }
-                }
-            }
+        for (InventoryEvent event1 : events) {
+            int itemId = event1.itemId;
+            String name = itemManager.getItemComposition(itemId).getName();
+            String action = event1.actionType.toString();
+            gameMsg(String.format("%s: %s", action, name));
         }
+
         previousInventory = currentInventory.clone();
     }
 }
