@@ -34,15 +34,12 @@ public class LootLoggerPlugin extends Plugin {
     @Inject
     private java.util.concurrent.ScheduledExecutorService executor;
 
-    // ---> NEW: Our dedicated riter class
     private LootWriter lootWriter;
 
     // DEBUG VARIABLES //
     private int lastActiveAnimation = -1;
     private String lastMenuOptionClicked = "";
     private Item[] previousInventory = new Item[28];
-
-    /// ////////////////////////////
 
     public void gameMsg(String msg) {
         client.addChatMessage(ChatMessageType.GAMEMESSAGE, "", msg, null);
@@ -151,6 +148,7 @@ public class LootLoggerPlugin extends Plugin {
 
     @Subscribe
     public void onItemContainerChanged(ItemContainerChanged event) {
+        // TODO: add container 94 logic (worn items)
         if (event.getContainerId() != 93) return;
 
         ItemContainer bankContainer = client.getItemContainer(95);
@@ -159,13 +157,25 @@ public class LootLoggerPlugin extends Plugin {
 
         List<InventoryEvent> events = InventoryProcessor.invProcess(previousInventory, currentInventory, isBanking, lastMenuOptionClicked, client.getLocalPlayer().getAnimation());
 
-        for (InventoryEvent event1 : events) {
-            int itemId = event1.itemId;
+        for (InventoryEvent invEvent : events) {
+            int itemId = invEvent.itemId;
+            int qty = invEvent.qty;
             String name = itemManager.getItemComposition(itemId).getName();
-            String action = event1.actionType.toString();
-            gameMsg(String.format("%s: %s", action, name));
-        }
 
+            // TODO: finish adding the cases
+            switch (invEvent.actionType) {
+                case GATHER_GAIN:
+                    handleGatheringGains(itemId, qty);
+                    gameMsg(String.format("Logged gain: %s x:%d", name, qty));
+                    break;
+                case BANK_WITHDRAWAL:
+                    gameMsg(String.format("Withdrew: %s", name));
+                    break;
+                case BANK_DEPOSIT:
+                    gameMsg(String.format("Banked: %s", name));
+                    break;
+            }
+        }
         previousInventory = currentInventory.clone();
     }
 }
