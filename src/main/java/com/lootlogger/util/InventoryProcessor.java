@@ -46,6 +46,7 @@ public class InventoryProcessor {
                     } else if (DESTROY_OPTIONS.contains(lastMenuOptionClicked)) {
                         events.add(new InventoryEvent(ActionType.DESTROY, oldId, oldQty));
                     } else if (currentAnimation == -1) {
+                        // TODO: handle equips
                         events.add(new InventoryEvent(ActionType.SWAP, oldId, oldQty));
                     } else {
                         events.add(new InventoryEvent(ActionType.CONSUME, oldId, oldQty)); // Catch-all loss
@@ -84,7 +85,6 @@ public class InventoryProcessor {
                 }
             }
         }
-
         return events;
     }
 }
