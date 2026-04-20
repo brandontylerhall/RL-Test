@@ -121,7 +121,7 @@ public class LootLoggerPlugin extends Plugin {
         WorldPoint wp = npc.getWorldLocation();
 
         List<DroppedItem> items = event.getItems().stream()
-                .map(item -> new DroppedItem(item.getId(), item.getQuantity()))
+                .map(item -> new DroppedItem(item.getId(), item.getQuantity(), (itemManager.getItemPrice(item.getId() * item.getQuantity())), (itemManager.getItemComposition(item.getId()).getHaPrice() * item.getQuantity())))
                 .collect(java.util.stream.Collectors.toList());
 
         LootRecord record = new LootRecord(sessionId, sourceName, wp.getX(), wp.getY(), wp.getPlane(), items);
@@ -164,7 +164,7 @@ public class LootLoggerPlugin extends Plugin {
 
         gameMsg(String.format("Resource gained from %s: %s. Qty: %d", sourceName, resourceName, qty));
 
-        List<DroppedItem> items = List.of(new DroppedItem(itemId, qty));
+        List<DroppedItem> items = List.of(new DroppedItem(itemId, qty, (itemManager.getItemPrice(itemId) * qty), itemManager.getItemComposition(itemId).getHaPrice() * qty));
         LootRecord record = new LootRecord(sessionId, sourceName, wp.getX(), wp.getY(), wp.getPlane(), items);
 
         executor.execute(() -> lootWriter.writeToFile(record));
@@ -203,7 +203,7 @@ public class LootLoggerPlugin extends Plugin {
                     if (config.debugMessages()) {
                         gameMsg(String.format("Banked: %s", name));
                     }
-                    List<DroppedItem> bankList = List.of(new DroppedItem(itemId, qty));
+                    List<DroppedItem> bankList = List.of(new DroppedItem(itemId, qty, (itemManager.getItemPrice(itemId) * qty), itemManager.getItemComposition(itemId).getHaPrice() * qty));
                     ActionRecord bankRecord = new ActionRecord(sessionId, "BANK_DEPOSIT", wp.getX(), wp.getY(), wp.getPlane(), bankList);
                     executor.execute(() -> lootWriter.writeToFile(bankRecord));
                     break;
@@ -212,7 +212,7 @@ public class LootLoggerPlugin extends Plugin {
                         gameMsg(String.format("Consumed: %s", name));
                     }
                     if (config.logConsumables()) {
-                        List<DroppedItem> consumeList = List.of(new DroppedItem(itemId, qty));
+                        List<DroppedItem> consumeList = List.of(new DroppedItem(itemId, qty, (itemManager.getItemPrice(itemId) * qty), itemManager.getItemComposition(itemId).getHaPrice() * qty));
                         ActionRecord consumeRecord = new ActionRecord(sessionId, "CONSUME", wp.getX(), wp.getY(), wp.getPlane(), consumeList);
                         executor.execute(() -> lootWriter.writeToFile(consumeRecord));
                     }
@@ -222,7 +222,7 @@ public class LootLoggerPlugin extends Plugin {
                         gameMsg(String.format("Destroyed: %s", name));
                     }
                     if (config.logConsumables()) {
-                        List<DroppedItem> destroyList = List.of(new DroppedItem(itemId, qty));
+                        List<DroppedItem> destroyList = List.of(new DroppedItem(itemId, qty, (itemManager.getItemPrice(itemId) * qty), itemManager.getItemComposition(itemId).getHaPrice() * qty));
                         ActionRecord consumeRecord = new ActionRecord(sessionId, "DESTROY", wp.getX(), wp.getY(), wp.getPlane(), destroyList);
                         executor.execute(() -> lootWriter.writeToFile(consumeRecord));
                     }
@@ -232,7 +232,7 @@ public class LootLoggerPlugin extends Plugin {
                         gameMsg(String.format("Picked up: %s", name));
                     }
                     if (config.logConsumables()) {
-                        List<DroppedItem> pickupList = List.of(new DroppedItem(itemId, qty));
+                        List<DroppedItem> pickupList = List.of(new DroppedItem(itemId, qty, (itemManager.getItemPrice(itemId) * qty), itemManager.getItemComposition(itemId).getHaPrice() * qty));
                         ActionRecord consumeRecord = new ActionRecord(sessionId, "TAKE", wp.getX(), wp.getY(), wp.getPlane(), pickupList);
                         executor.execute(() -> lootWriter.writeToFile(consumeRecord));
                     }
