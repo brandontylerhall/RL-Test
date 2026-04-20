@@ -16,12 +16,17 @@ public class InventoryProcessor {
             "Destroy", "Drop"
     );
 
+    private static final java.util.Set<Integer> FIREMAKE_OPTIONS = java.util.Set.of(
+            733, 10572
+    );
+
     public static List<InventoryEvent> invProcess(
             Item[] previousInventory,
             Item[] currentInventory,
             boolean isBanking,
             String lastMenuOptionClicked,
-            int currentAnimation
+            int currentAnimation,
+            int lastAnimation
     ) {
         List<InventoryEvent> events = new ArrayList<>();
 
@@ -41,8 +46,9 @@ public class InventoryProcessor {
                 if (oldId != -1) {
                     if (isBanking) {
                         events.add(new InventoryEvent(ActionType.BANK_DEPOSIT, oldId, oldQty));
-                    } else if (CONSUME_OPTIONS.contains(lastMenuOptionClicked)) {
+                    } else if (CONSUME_OPTIONS.contains(lastMenuOptionClicked) || FIREMAKE_OPTIONS.contains(lastAnimation)) {
                         events.add(new InventoryEvent(ActionType.CONSUME, oldId, oldQty));
+
                     } else if (DESTROY_OPTIONS.contains(lastMenuOptionClicked)) {
                         events.add(new InventoryEvent(ActionType.DESTROY, oldId, oldQty));
                     } else if (currentAnimation == -1) {
