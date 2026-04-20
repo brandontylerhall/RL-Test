@@ -3,6 +3,7 @@ package com.lootlogger.data;
 import java.util.List;
 
 public class LootRecord {
+    public String sessionId;
     // Name of source
     public String source;
 
@@ -15,7 +16,8 @@ public class LootRecord {
     // Items received in this loot event
     public List<DroppedItem> items;
 
-    public LootRecord(String source, int x, int y, int plane, List<DroppedItem> items) {
+    public LootRecord(String sessionId, String source, int x, int y, int plane, List<DroppedItem> items) {
+        this.sessionId = sessionId;
         this.source = source;
         this.x = x;
         this.y = y;
