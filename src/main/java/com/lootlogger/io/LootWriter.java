@@ -18,7 +18,7 @@ public class LootWriter {
         writer = new FileWriter(logFile, true);
     }
 
-    public void writeToFile(LootRecord record) {
+    public void writeToFile(Object record) {
         try {
             synchronized (writer) {
                 writer.write(compactGson.toJson(record) + "\n");
