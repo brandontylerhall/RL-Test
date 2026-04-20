@@ -1,5 +1,7 @@
 package com.lootlogger;
 
+import com.google.inject.Provides;
+import com.lootlogger.data.ActionRecord;
 import com.lootlogger.data.DroppedItem;
 import com.lootlogger.data.InventoryEvent;
 import com.lootlogger.data.LootRecord;
@@ -13,6 +15,7 @@ import net.runelite.api.events.AnimationChanged;
 import net.runelite.api.events.CommandExecuted;
 import net.runelite.api.events.ItemContainerChanged;
 import net.runelite.api.events.MenuOptionClicked;
+import net.runelite.client.config.ConfigManager;
 import net.runelite.client.eventbus.Subscribe;
 import net.runelite.client.game.ItemManager;
 import net.runelite.client.plugins.Plugin;
@@ -29,10 +32,20 @@ public class LootLoggerPlugin extends Plugin {
     private Client client;
 
     @Inject
+    private LootLoggerConfig config;
+
+    @Provides
+    LootLoggerConfig provideConfig(ConfigManager configManager) {
+        return configManager.getConfig(LootLoggerConfig.class);
+    }
+
+    @Inject
     private ItemManager itemManager;
 
     @Inject
     private java.util.concurrent.ScheduledExecutorService executor;
+
+    private String sessionId;
 
     private LootWriter lootWriter;
 
@@ -42,6 +55,10 @@ public class LootLoggerPlugin extends Plugin {
     private Item[] previousInventory = new Item[28];
 
     public void gameMsg(String msg) {
+        if (!config.showChatMessages()) {
+            return;
+        }
+
         client.addChatMessage(ChatMessageType.GAMEMESSAGE, "", msg, null);
     }
 
@@ -60,6 +77,8 @@ public class LootLoggerPlugin extends Plugin {
     // =========================
     @Override
     protected void startUp() throws Exception {
+        sessionId = java.util.UUID.randomUUID().toString();
+
         lootWriter = new LootWriter();
         lootWriter.init(); // Tell the writer to open the file
 
@@ -82,12 +101,12 @@ public class LootLoggerPlugin extends Plugin {
     public void onCommandExecuted(CommandExecuted event) {
         if (event.getCommand().equals("status")) {
             int currentAnim = client.getLocalPlayer().getAnimation();
-            WorldPoint loc = client.getLocalPlayer().getWorldLocation();
+            WorldPoint wp = client.getLocalPlayer().getWorldLocation();
 
             gameMsg("--- DEBUG STATUS ---");
-            gameMsg("Current Animation: " + currentAnim);
-            gameMsg("Last Saved Animation: " + lastActiveAnimation);
-            gameMsg("Location: " + loc.getX() + ", " + loc.getY() + ", " + loc.getPlane());
+            gameMsg(String.format("Current Animation: %d", currentAnim));
+            gameMsg(String.format("Last Saved Animation: %d", lastActiveAnimation));
+            gameMsg(String.format("Location: %d, %d, %d", wp.getX(), wp.getY(), wp.getPlane()));
             gameMsg(String.format("Last menu option: %s", lastMenuOptionClicked));
         }
     }
@@ -99,13 +118,13 @@ public class LootLoggerPlugin extends Plugin {
     public void onNpcLootReceived(NpcLootReceived event) {
         NPC npc = event.getNpc();
         String sourceName = npc.getName();
-        WorldPoint location = npc.getWorldLocation();
+        WorldPoint wp = npc.getWorldLocation();
 
         List<DroppedItem> items = event.getItems().stream()
                 .map(item -> new DroppedItem(item.getId(), item.getQuantity()))
                 .collect(java.util.stream.Collectors.toList());
 
-        LootRecord record = new LootRecord(sourceName, location.getX(), location.getY(), location.getPlane(), items);
+        LootRecord record = new LootRecord(sessionId, sourceName, wp.getX(), wp.getY(), wp.getPlane(), items);
 
         // Pass the record to the writer via the executor
         executor.execute(() -> lootWriter.writeToFile(record));
@@ -120,6 +139,11 @@ public class LootLoggerPlugin extends Plugin {
         int animId = client.getLocalPlayer().getAnimation();
         if (animId != -1) {
             lastActiveAnimation = animId;
+        }
+
+        if (config.debugMessages()) {
+            gameMsg(String.format("Last animation ID: %d", lastActiveAnimation));
+            gameMsg(String.format("Current animation ID: %d", client.getLocalPlayer().getAnimation()));
         }
     }
 
@@ -141,13 +165,15 @@ public class LootLoggerPlugin extends Plugin {
         gameMsg(String.format("Resource gained from %s: %s. Qty: %d", sourceName, resourceName, qty));
 
         List<DroppedItem> items = List.of(new DroppedItem(itemId, qty));
-        LootRecord record = new LootRecord(sourceName, wp.getX(), wp.getY(), wp.getPlane(), items);
+        LootRecord record = new LootRecord(sessionId, sourceName, wp.getX(), wp.getY(), wp.getPlane(), items);
 
         executor.execute(() -> lootWriter.writeToFile(record));
     }
 
     @Subscribe
     public void onItemContainerChanged(ItemContainerChanged event) {
+        WorldPoint wp = client.getLocalPlayer().getWorldLocation();
+
         // TODO: add container 94 logic (worn items)
         if (event.getContainerId() != 93) return;
 
@@ -155,7 +181,7 @@ public class LootLoggerPlugin extends Plugin {
         boolean isBanking = (bankContainer != null);
         Item[] currentInventory = event.getItemContainer().getItems();
 
-        List<InventoryEvent> events = InventoryProcessor.invProcess(previousInventory, currentInventory, isBanking, lastMenuOptionClicked, client.getLocalPlayer().getAnimation());
+        List<InventoryEvent> events = InventoryProcessor.invProcess(previousInventory, currentInventory, isBanking, lastMenuOptionClicked, client.getLocalPlayer().getAnimation(), lastActiveAnimation);
 
         for (InventoryEvent invEvent : events) {
             int itemId = invEvent.itemId;
@@ -169,10 +195,47 @@ public class LootLoggerPlugin extends Plugin {
                     gameMsg(String.format("Logged gain: %s x:%d", name, qty));
                     break;
                 case BANK_WITHDRAWAL:
-                    gameMsg(String.format("Withdrew: %s", name));
+                    if (config.debugMessages()) {
+                        gameMsg(String.format("Withdrew: %s", name));
+                    }
                     break;
                 case BANK_DEPOSIT:
-                    gameMsg(String.format("Banked: %s", name));
+                    if (config.debugMessages()) {
+                        gameMsg(String.format("Banked: %s", name));
+                    }
+                    List<DroppedItem> bankList = List.of(new DroppedItem(itemId, qty));
+                    ActionRecord bankRecord = new ActionRecord(sessionId, "BANK_DEPOSIT", wp.getX(), wp.getY(), wp.getPlane(), bankList);
+                    executor.execute(() -> lootWriter.writeToFile(bankRecord));
+                    break;
+                case CONSUME:
+                    if (config.debugMessages()) {
+                        gameMsg(String.format("Consumed: %s", name));
+                    }
+                    if (config.logConsumables()) {
+                        List<DroppedItem> consumeList = List.of(new DroppedItem(itemId, qty));
+                        ActionRecord consumeRecord = new ActionRecord(sessionId, "CONSUME", wp.getX(), wp.getY(), wp.getPlane(), consumeList);
+                        executor.execute(() -> lootWriter.writeToFile(consumeRecord));
+                    }
+                    break;
+                case DESTROY:
+                    if (config.debugMessages()) {
+                        gameMsg(String.format("Destroyed: %s", name));
+                    }
+                    if (config.logConsumables()) {
+                        List<DroppedItem> destroyList = List.of(new DroppedItem(itemId, qty));
+                        ActionRecord consumeRecord = new ActionRecord(sessionId, "DESTROY", wp.getX(), wp.getY(), wp.getPlane(), destroyList);
+                        executor.execute(() -> lootWriter.writeToFile(consumeRecord));
+                    }
+                    break;
+                case TAKE:
+                    if (config.debugMessages()) {
+                        gameMsg(String.format("Picked up: %s", name));
+                    }
+                    if (config.logConsumables()) {
+                        List<DroppedItem> pickupList = List.of(new DroppedItem(itemId, qty));
+                        ActionRecord consumeRecord = new ActionRecord(sessionId, "TAKE", wp.getX(), wp.getY(), wp.getPlane(), pickupList);
+                        executor.execute(() -> lootWriter.writeToFile(consumeRecord));
+                    }
                     break;
             }
         }
