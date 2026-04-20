@@ -22,13 +22,8 @@ public class LootWriter {
         try (FileInputStream fis = new FileInputStream("gradle.properties")) {
             prop.load(fis);
 
-            // Grab the exact names you used in the file
             supabaseUrl = prop.getProperty("SUPABASE_URL");
             supabaseKey = prop.getProperty("SUPABASE_KEY");
-
-            // Just a quick debug print so you know it worked (masking the key!)
-            System.out.println("Loaded Supabase URL: " + supabaseUrl);
-            System.out.println("Loaded Supabase Key: " + supabaseKey.substring(0, 10) + "...");
 
         } catch (IOException e) {
             System.out.println("WARNING: Could not load gradle.properties!");
