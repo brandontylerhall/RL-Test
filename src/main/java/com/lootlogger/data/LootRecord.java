@@ -1,28 +1,24 @@
 package com.lootlogger.data;
 
+import lombok.Builder;
+import lombok.Data;
+
+import java.time.Instant;
 import java.util.List;
 
+@Data
+@Builder
 public class LootRecord {
     public String sessionId;
-    // Name of source
-    public String source;
 
-    // World coordinates
-    public int x;
-    public int y;
-    public int plane;
-    public long timestamp;
+    @Builder.Default
+    private String timestamp = Instant.now().toString();
 
-    // Items received in this loot event
-    public List<DroppedItem> items;
-
-    public LootRecord(String sessionId, String source, int x, int y, int plane, List<DroppedItem> items) {
-        this.sessionId = sessionId;
-        this.source = source;
-        this.x = x;
-        this.y = y;
-        this.plane = plane;
-        this.timestamp = java.time.Instant.now().getEpochSecond();;
-        this.items = items;
-    }
+    private String source;
+    private String category;
+    private int x;
+    private int y;
+    private int plane;
+    private int regionId;
+    private List<DroppedItem> items;
 }

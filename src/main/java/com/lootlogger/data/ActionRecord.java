@@ -1,21 +1,22 @@
 package com.lootlogger.data;
 
+import lombok.Builder;
+import lombok.Data;
+import java.time.Instant;
 import java.util.List;
 
+@Data
+@Builder
 public class ActionRecord {
-    public final String sessionId;
-    public final String action;
-    public final int x;
-    public final int y;
-    public final int plane;
-    public final List<DroppedItem> items;
+    private String sessionId;
 
-    public ActionRecord(String sessionId, String action, int x, int y, int plane, List<DroppedItem> items) {
-        this.sessionId = sessionId;
-        this.action = action;
-        this.x = x;
-        this.y = y;
-        this.plane = plane;
-        this.items = items;
-    }
+    @Builder.Default
+    private String timestamp = Instant.now().toString();
+
+    private String action;
+    private int x;
+    private int y;
+    private int plane;
+    private int regionId;
+    private List<DroppedItem> items;
 }
