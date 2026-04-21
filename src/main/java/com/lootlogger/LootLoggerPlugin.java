@@ -21,8 +21,10 @@ import net.runelite.client.game.ItemManager;
 import net.runelite.client.plugins.Plugin;
 import net.runelite.client.plugins.PluginDescriptor;
 import net.runelite.client.events.NpcLootReceived;
+import net.runelite.client.task.Schedule;
 
 import javax.inject.Inject;
+import java.time.temporal.ChronoUnit;
 import java.util.List;
 
 @Slf4j
@@ -90,7 +92,15 @@ public class LootLoggerPlugin extends Plugin {
     @Override
     public void shutDown() throws Exception {
         if (lootWriter != null) {
+            lootWriter.flush();
             lootWriter.close();
+        }
+    }
+
+    @Schedule(period = 10, unit = ChronoUnit.SECONDS, asynchronous = true)
+    public void submitBatch() {
+        if (lootWriter != null) {
+            lootWriter.flush();
         }
     }
 
@@ -121,13 +131,21 @@ public class LootLoggerPlugin extends Plugin {
         WorldPoint wp = npc.getWorldLocation();
 
         List<DroppedItem> items = event.getItems().stream()
-                .map(item -> new DroppedItem(item.getId(), item.getQuantity(), (itemManager.getItemPrice(item.getId() * item.getQuantity())), (itemManager.getItemComposition(item.getId()).getHaPrice() * item.getQuantity())))
+                .map(item -> new DroppedItem(item.getId(), itemManager.getItemComposition(item.getId()).getName(), item.getQuantity(), (itemManager.getItemPrice(item.getId() * item.getQuantity())), (itemManager.getItemComposition(item.getId()).getHaPrice() * item.getQuantity())))
                 .collect(java.util.stream.Collectors.toList());
 
-        LootRecord record = new LootRecord(sessionId, sourceName, wp.getX(), wp.getY(), wp.getPlane(), items);
+        LootRecord record =
+                LootRecord.builder()
+                        .sessionId(sessionId)
+                        .source(sourceName)
+                        .x(wp.getX())
+                        .y(wp.getY())
+                        .plane(wp.getPlane())
+                        .regionId(wp.getRegionID())
+                        .items(items)
+                        .build();
 
-        // Pass the record to the writer via the executor
-        executor.execute(() -> lootWriter.writeToFile(record));
+        executor.execute(() -> lootWriter.queueRecord(record));
     }
 
     // =========================
@@ -164,17 +182,26 @@ public class LootLoggerPlugin extends Plugin {
 
         gameMsg(String.format("Resource gained from %s: %s. Qty: %d", sourceName, resourceName, qty));
 
-        List<DroppedItem> items = List.of(new DroppedItem(itemId, qty, (itemManager.getItemPrice(itemId) * qty), itemManager.getItemComposition(itemId).getHaPrice() * qty));
-        LootRecord record = new LootRecord(sessionId, sourceName, wp.getX(), wp.getY(), wp.getPlane(), items);
+        List<DroppedItem> items = List.of(new DroppedItem(itemId, itemManager.getItemComposition(itemId).getName(), qty, (itemManager.getItemPrice(itemId) * qty), itemManager.getItemComposition(itemId).getHaPrice() * qty));
 
-        executor.execute(() -> lootWriter.writeToFile(record));
+        LootRecord record =
+                LootRecord.builder()
+                        .sessionId(sessionId)
+                        .source(sourceName)
+                        .x(wp.getX())
+                        .y(wp.getY())
+                        .plane(wp.getPlane())
+                        .regionId(wp.getRegionID())
+                        .items(items)
+                        .build();
+
+        executor.execute(() -> lootWriter.queueRecord(record));
     }
 
     @Subscribe
     public void onItemContainerChanged(ItemContainerChanged event) {
         WorldPoint wp = client.getLocalPlayer().getWorldLocation();
 
-        // TODO: add container 94 logic (worn items)
         if (event.getContainerId() != 93) return;
 
         ItemContainer bankContainer = client.getItemContainer(95);
@@ -188,57 +215,44 @@ public class LootLoggerPlugin extends Plugin {
             int qty = invEvent.qty;
             String name = itemManager.getItemComposition(itemId).getName();
 
-            // TODO: finish adding the cases
             switch (invEvent.actionType) {
                 case GATHER_GAIN:
                     handleGatheringGains(itemId, qty);
-                    gameMsg(String.format("Logged gain: %s x:%d", name, qty));
-                    break;
-                case BANK_WITHDRAWAL:
-                    if (config.debugMessages()) {
-                        gameMsg(String.format("Withdrew: %s", name));
-                    }
                     break;
                 case BANK_DEPOSIT:
-                    if (config.debugMessages()) {
-                        gameMsg(String.format("Banked: %s", name));
-                    }
-                    List<DroppedItem> bankList = List.of(new DroppedItem(itemId, qty, (itemManager.getItemPrice(itemId) * qty), itemManager.getItemComposition(itemId).getHaPrice() * qty));
-                    ActionRecord bankRecord = new ActionRecord(sessionId, "BANK_DEPOSIT", wp.getX(), wp.getY(), wp.getPlane(), bankList);
-                    executor.execute(() -> lootWriter.writeToFile(bankRecord));
+                    List<DroppedItem> bankList = List.of(new DroppedItem(itemId, name, qty, (itemManager.getItemPrice(itemId) * qty), itemManager.getItemComposition(itemId).getHaPrice() * qty));
+                    ActionRecord bankRecord = ActionRecord.builder()
+                            .sessionId(sessionId).action("BANK_DEPOSIT")
+                            .x(wp.getX()).y(wp.getY()).plane(wp.getPlane()).regionId(wp.getRegionID())
+                            .items(bankList).build();
+                    executor.execute(() -> lootWriter.queueRecord(bankRecord));
                     break;
                 case CONSUME:
-                    if (config.debugMessages()) {
-                        gameMsg(String.format("Consumed: %s", name));
-                    }
                     if (config.logConsumables()) {
-                        List<DroppedItem> consumeList = List.of(new DroppedItem(itemId, qty, (itemManager.getItemPrice(itemId) * qty), itemManager.getItemComposition(itemId).getHaPrice() * qty));
-                        ActionRecord consumeRecord = new ActionRecord(sessionId, "CONSUME", wp.getX(), wp.getY(), wp.getPlane(), consumeList);
-                        executor.execute(() -> lootWriter.writeToFile(consumeRecord));
-                    }
-                    break;
-                case DESTROY:
-                    if (config.debugMessages()) {
-                        gameMsg(String.format("Destroyed: %s", name));
-                    }
-                    if (config.logConsumables()) {
-                        List<DroppedItem> destroyList = List.of(new DroppedItem(itemId, qty, (itemManager.getItemPrice(itemId) * qty), itemManager.getItemComposition(itemId).getHaPrice() * qty));
-                        ActionRecord consumeRecord = new ActionRecord(sessionId, "DESTROY", wp.getX(), wp.getY(), wp.getPlane(), destroyList);
-                        executor.execute(() -> lootWriter.writeToFile(consumeRecord));
+                        List<DroppedItem> consumeList = List.of(new DroppedItem(itemId, name, qty, (itemManager.getItemPrice(itemId) * qty), itemManager.getItemComposition(itemId).getHaPrice() * qty));
+                        ActionRecord consumeRecord = ActionRecord.builder()
+                                .sessionId(sessionId).action("CONSUME")
+                                .x(wp.getX()).y(wp.getY()).plane(wp.getPlane()).regionId(wp.getRegionID())
+                                .items(consumeList).build();
+                        executor.execute(() -> lootWriter.queueRecord(consumeRecord));
                     }
                     break;
                 case TAKE:
-                    if (config.debugMessages()) {
-                        gameMsg(String.format("Picked up: %s", name));
-                    }
-                    if (config.logConsumables()) {
-                        List<DroppedItem> pickupList = List.of(new DroppedItem(itemId, qty, (itemManager.getItemPrice(itemId) * qty), itemManager.getItemComposition(itemId).getHaPrice() * qty));
-                        ActionRecord consumeRecord = new ActionRecord(sessionId, "TAKE", wp.getX(), wp.getY(), wp.getPlane(), pickupList);
-                        executor.execute(() -> lootWriter.writeToFile(consumeRecord));
-                    }
+                    String source = (lastActiveAnimation != -1) ? SOURCE_MAP.getOrDefault(lastActiveAnimation, "Pickup") : "Pickup";
+
+                    List<DroppedItem> pickupList = List.of(new DroppedItem(itemId, name, qty, (itemManager.getItemPrice(itemId) * qty), itemManager.getItemComposition(itemId).getHaPrice() * qty));
+
+                    LootRecord pickupRecord = LootRecord.builder()
+                            .sessionId(sessionId)
+                            .source(source)
+                            .x(wp.getX()).y(wp.getY()).plane(wp.getPlane()).regionId(wp.getRegionID())
+                            .items(pickupList).build();
+
+                    executor.execute(() -> lootWriter.queueRecord(pickupRecord));
                     break;
             }
+
+            previousInventory = currentInventory.clone();
         }
-        previousInventory = currentInventory.clone();
     }
 }
