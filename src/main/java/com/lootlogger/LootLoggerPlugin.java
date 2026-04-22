@@ -106,9 +106,29 @@ public class LootLoggerPlugin extends Plugin {
 
     @Subscribe
     public void onGameStateChanged(net.runelite.api.events.GameStateChanged event) {
-        if (event.getGameState() == GameState.LOGIN_SCREEN || event.getGameState() == GameState.HOPPING) {
-            hasSyncedBankThisSession = false; // reset on log out or world hop
-            gameMsg("" + hasSyncedBankThisSession);
+        if (event.getGameState() == GameState.LOGGING_IN || event.getGameState() == GameState.HOPPING) {
+            hasSyncedBankThisSession = false;
+        }
+
+        if (event.getGameState() == GameState.LOGGED_IN) {
+            if (sessionId == null) {
+                sessionId = java.util.UUID.randomUUID().toString();
+                ActionRecord startRecord = ActionRecord.builder()
+                        .sessionId(sessionId).action("SESSION_START")
+                        .x(0).y(0).plane(0).regionId(0)
+                        .items(List.of()).build();
+                executor.execute(() -> lootWriter.queueRecord(startRecord));
+            }
+        } else if (event.getGameState() == GameState.LOGIN_SCREEN) {
+            if (sessionId != null) {
+                ActionRecord endRecord = ActionRecord.builder()
+                        .sessionId(sessionId).action("SESSION_END")
+                        .x(0).y(0).plane(0).regionId(0)
+                        .items(List.of()).build();
+                executor.execute(() -> lootWriter.queueRecord(endRecord));
+
+                sessionId = null;
+            }
         }
     }
 
