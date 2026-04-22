@@ -99,7 +99,7 @@ public class InventoryProcessor {
         Map<Integer, Integer> counts = new HashMap<>();
         if (inv == null) return counts;
         for (Item item : inv) {
-            if (item.getId() > 0) {
+            if (item != null && item.getId() > 0) {
                 counts.put(item.getId(), counts.getOrDefault(item.getId(), 0) + item.getQuantity());
             }
         }
