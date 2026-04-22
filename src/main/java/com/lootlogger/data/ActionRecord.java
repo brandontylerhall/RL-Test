@@ -13,6 +13,7 @@ public class ActionRecord {
     @Builder.Default
     private String timestamp = Instant.now().toString();
 
+    private String source;
     private String action;
     private int x;
     private int y;
