@@ -7,5 +7,6 @@ public enum ActionType {
     BANK_DEPOSIT,
     BANK_WITHDRAWAL,
     SWAP,
-    TAKE
+    TAKE,
+    DROP
 }
