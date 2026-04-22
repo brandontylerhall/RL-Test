@@ -14,6 +14,7 @@ public class ActionRecord {
     private String timestamp = Instant.now().toString();
 
     private String source;
+    private String category;
     private String action;
     private int x;
     private int y;
