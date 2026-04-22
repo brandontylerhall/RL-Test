@@ -11,5 +11,6 @@ public enum ActionType {
     DROP,
     RANGED_FIRE,
     SPELL_CAST,
-    COMBAT_CONSUME
+    COMBAT_CONSUME,
+    SKILLING_CONSUME
 }
