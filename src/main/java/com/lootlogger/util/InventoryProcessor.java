@@ -61,9 +61,10 @@ public class InventoryProcessor {
                 } else if (isAmmo && justFiredRanged) {
                     events.add(new InventoryEvent(itemId, qtyLost, ActionType.RANGED_FIRE, combatTarget));
                 } else if (inCombat && (CONSUME_OPTIONS.contains(lastMenuOptionClicked) || currentAnimation != -1)) {
-                    // We ate/drank something while fighting!
                     events.add(new InventoryEvent(itemId, qtyLost, ActionType.COMBAT_CONSUME, combatTarget));
-                } else if (CONSUME_OPTIONS.contains(lastMenuOptionClicked) || FIREMAKE_OPTIONS.contains(lastAnimation)) {
+                } else if (FIREMAKE_OPTIONS.contains(lastAnimation)) {
+                    events.add(new InventoryEvent(itemId, qtyLost, ActionType.SKILLING_CONSUME, "Firemaking"));
+                } else if (CONSUME_OPTIONS.contains(lastMenuOptionClicked)) {
                     events.add(new InventoryEvent(itemId, qtyLost, ActionType.CONSUME, "None"));
                 } else {
                     events.add(new InventoryEvent(itemId, qtyLost, ActionType.CONSUME, "None"));

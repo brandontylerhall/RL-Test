@@ -6,7 +6,6 @@ import com.lootlogger.data.DroppedItem;
 import com.lootlogger.data.InventoryEvent;
 import com.lootlogger.data.LootRecord;
 import com.lootlogger.io.LootWriter;
-
 import com.lootlogger.util.InventoryProcessor;
 import lombok.extern.slf4j.Slf4j;
 import net.runelite.api.*;
@@ -48,34 +47,29 @@ public class LootLoggerPlugin extends Plugin {
     private java.util.concurrent.ScheduledExecutorService executor;
 
     private String sessionId;
-
     private LootWriter lootWriter;
 
-    // DEBUG VARIABLES //
+    // DEBUG & UI VARIABLES //
     private int lastActiveAnimation = -1;
+    private int lastAnimationTick = -1; // <-- FIX 3: Tracks WHEN the animation happened
     private String lastMenuOptionClicked = "";
     private Item[] previousInventory = new Item[28];
-    ////////////////////////////////
 
     // BANK TRACKING VARIABLES //
     private boolean isBankWidgetOpen = false;
     private int lastBankCloseTick = -1;
     private boolean hasSyncedBankThisSession = false;
-    ////////////////////////////////
 
-    // COMBAT TRACKING VARIABLES //
+    // COMBAT & XP TRACKING VARIABLES //
     private final java.util.Map<Integer, Integer> droppedItemsCache = new java.util.HashMap<>();
+    private static final java.util.Set<String> COMBAT_SKILLS = java.util.Set.of("Attack", "Strength", "Defence", "Ranged", "Magic", "Hitpoints", "Prayer");
     private final java.util.Map<Skill, Integer> currentXpMap = new java.util.EnumMap<>(Skill.class);
     private final java.util.Map<Skill, Integer> lastXpTickMap = new java.util.EnumMap<>(Skill.class);
     private String currentCombatTarget = "None";
     private int lastCombatTick = -1;
-    ////////////////////////////////
 
     public void gameMsg(String msg) {
-        if (!config.showChatMessages()) {
-            return;
-        }
-
+        if (!config.showChatMessages()) return;
         client.addChatMessage(ChatMessageType.GAMEMESSAGE, "", msg, null);
     }
 
@@ -89,19 +83,11 @@ public class LootLoggerPlugin extends Plugin {
             java.util.Map.entry(621, "Fishing")
     );
 
-    // =========================
-    //    START UP / SHUT DOWN
-    // =========================
     @Override
     protected void startUp() throws Exception {
-        sessionId = java.util.UUID.randomUUID().toString();
-
         lootWriter = new LootWriter();
         lootWriter.init();
-
-        for (int i = 0; i < 28; i++) {
-            previousInventory[i] = new Item(-1, 0);
-        }
+        for (int i = 0; i < 28; i++) previousInventory[i] = new Item(-1, 0);
     }
 
     @Subscribe
@@ -111,12 +97,20 @@ public class LootLoggerPlugin extends Plugin {
         }
 
         if (event.getGameState() == GameState.LOGGED_IN) {
+            // FIX: Only initialize the map if it's empty to prevent "Login XP" drops
+            for (Skill skill : Skill.values()) {
+                if (!currentXpMap.containsKey(skill)) {
+                    currentXpMap.put(skill, client.getSkillExperience(skill));
+                }
+            }
+
             if (sessionId == null) {
                 sessionId = java.util.UUID.randomUUID().toString();
                 ActionRecord startRecord = ActionRecord.builder()
                         .sessionId(sessionId).action("SESSION_START")
                         .x(0).y(0).plane(0).regionId(0)
                         .items(List.of()).build();
+                // We use executor for start to keep login snappy
                 executor.execute(() -> lootWriter.queueRecord(startRecord));
             }
         } else if (event.getGameState() == GameState.LOGIN_SCREEN) {
@@ -125,8 +119,9 @@ public class LootLoggerPlugin extends Plugin {
                         .sessionId(sessionId).action("SESSION_END")
                         .x(0).y(0).plane(0).regionId(0)
                         .items(List.of()).build();
-                executor.execute(() -> lootWriter.queueRecord(endRecord));
 
+                // Use lootWriter directly (not executor) to ensure it's queued before thread dies
+                lootWriter.queueRecord(endRecord);
                 sessionId = null;
             }
         }
@@ -134,7 +129,19 @@ public class LootLoggerPlugin extends Plugin {
 
     @Override
     public void shutDown() throws Exception {
+        if (sessionId != null) {
+            ActionRecord endRecord = ActionRecord.builder()
+                    .sessionId(sessionId).action("SESSION_END")
+                    .x(0).y(0).plane(0).regionId(0)
+                    .items(List.of()).build();
+
+            // FORCE write, no executor
+            lootWriter.queueRecord(endRecord);
+            sessionId = null;
+        }
+
         if (lootWriter != null) {
+            // Flush makes the actual HTTP call to Supabase
             lootWriter.flush();
             lootWriter.close();
         }
@@ -142,40 +149,17 @@ public class LootLoggerPlugin extends Plugin {
 
     @Schedule(period = 10, unit = ChronoUnit.SECONDS, asynchronous = true)
     public void submitBatch() {
-        if (lootWriter != null) {
-            lootWriter.flush();
-        }
-    }
-
-    // =========================
-    //      DEBUG COMMAND
-    // =========================
-    @Subscribe
-    public void onCommandExecuted(CommandExecuted event) {
-        if (event.getCommand().equals("status")) {
-            int currentAnim = client.getLocalPlayer().getAnimation();
-            WorldPoint wp = client.getLocalPlayer().getWorldLocation();
-
-            gameMsg("--- DEBUG STATUS ---");
-            gameMsg(String.format("Current Animation: %d", currentAnim));
-            gameMsg(String.format("Last Saved Animation: %d", lastActiveAnimation));
-            gameMsg(String.format("Location: %d, %d, %d", wp.getX(), wp.getY(), wp.getPlane()));
-            gameMsg(String.format("Last menu option: %s", lastMenuOptionClicked));
-        }
+        if (lootWriter != null) lootWriter.flush();
     }
 
     @Subscribe
     public void onWidgetLoaded(net.runelite.api.events.WidgetLoaded event) {
-        if (event.getGroupId() == 12 ||
-                event.getGroupId() == 15) {
-            isBankWidgetOpen = true;
-        }
+        if (event.getGroupId() == 12 || event.getGroupId() == 15) isBankWidgetOpen = true;
     }
 
     @Subscribe
     public void onWidgetClosed(net.runelite.api.events.WidgetClosed event) {
-        if (event.getGroupId() == 12 ||
-                event.getGroupId() == 15) {
+        if (event.getGroupId() == 12 || event.getGroupId() == 15) {
             isBankWidgetOpen = false;
             lastBankCloseTick = client.getTickCount();
         }
@@ -196,28 +180,33 @@ public class LootLoggerPlugin extends Plugin {
     public void onStatChanged(net.runelite.api.events.StatChanged event) {
         Skill skill = event.getSkill();
         int currentXp = event.getXp();
-
-        if (!currentXpMap.containsKey(skill)) {
-            currentXpMap.put(skill, currentXp);
-            return;
-        }
-
-        int previousXp = currentXpMap.get(skill);
+        int previousXp = currentXpMap.getOrDefault(skill, currentXp);
 
         if (currentXp > previousXp) {
             int xpGained = currentXp - previousXp;
             lastXpTickMap.put(skill, client.getTickCount());
             currentXpMap.put(skill, currentXp);
 
-            if (client.getLocalPlayer() != null) {
+            if (client.getLocalPlayer() != null && sessionId != null) {
                 WorldPoint wp = client.getLocalPlayer().getWorldLocation();
 
-                List<DroppedItem> xpList = List.of(new DroppedItem(0, skill.getName(), xpGained, 0, 0));
+                String skillName = skill.getName();
+                boolean isCombat = COMBAT_SKILLS.contains(skillName);
+
+                // FIX 1: Make sure we only tag the monster if we fought it recently!
+                boolean inCombatState = (client.getTickCount() - lastCombatTick <= 10);
+                String targetToLog = inCombatState ? currentCombatTarget : "None";
+
+                String category = isCombat ? "Combat" : "Skilling";
+                String source = isCombat ? targetToLog : skillName;
+
+                List<DroppedItem> xpList = List.of(new DroppedItem(0, skillName, xpGained, 0, 0));
 
                 ActionRecord xpRecord = ActionRecord.builder()
                         .sessionId(sessionId)
                         .action("XP_GAIN")
-                        .source(currentCombatTarget) // We even know what you were fighting when you got the XP!
+                        .category(category)
+                        .source(source)
                         .x(wp.getX()).y(wp.getY()).plane(wp.getPlane()).regionId(wp.getRegionID())
                         .items(xpList)
                         .build();
@@ -227,11 +216,9 @@ public class LootLoggerPlugin extends Plugin {
         }
     }
 
-    // =========================
-    //      NPC LOOT EVENT
-    // =========================
     @Subscribe
     public void onNpcLootReceived(NpcLootReceived event) {
+        if (sessionId == null) return;
         NPC npc = event.getNpc();
         String sourceName = npc.getName();
         WorldPoint wp = npc.getWorldLocation();
@@ -240,35 +227,23 @@ public class LootLoggerPlugin extends Plugin {
                 .map(item -> new DroppedItem(item.getId(), itemManager.getItemComposition(item.getId()).getName(), item.getQuantity(), (itemManager.getItemPrice(item.getId()) * item.getQuantity()), (itemManager.getItemComposition(item.getId()).getHaPrice() * item.getQuantity())))
                 .collect(java.util.stream.Collectors.toList());
 
-        LootRecord record =
-                LootRecord.builder()
-                        .sessionId(sessionId)
-                        .source(sourceName)
-                        .category("Combat")
-                        .x(wp.getX())
-                        .y(wp.getY())
-                        .plane(wp.getPlane())
-                        .regionId(wp.getRegionID())
-                        .items(items)
-                        .build();
+        LootRecord record = LootRecord.builder()
+                .sessionId(sessionId)
+                .source(sourceName)
+                .category("Combat")
+                .x(wp.getX()).y(wp.getY()).plane(wp.getPlane()).regionId(wp.getRegionID())
+                .items(items).build();
 
         executor.execute(() -> lootWriter.queueRecord(record));
     }
 
-    // =========================
-    //    ANIMATION & MENU EVENTS
-    // =========================
     @Subscribe
     public void onAnimationChanged(AnimationChanged event) {
         if (event.getActor() != client.getLocalPlayer()) return;
         int animId = client.getLocalPlayer().getAnimation();
         if (animId != -1) {
             lastActiveAnimation = animId;
-        }
-
-        if (config.debugMessages()) {
-            gameMsg(String.format("Last animation ID: %d", lastActiveAnimation));
-            gameMsg(String.format("Current animation ID: %d", client.getLocalPlayer().getAnimation()));
+            lastAnimationTick = client.getTickCount(); // Store exactly when it happened
         }
     }
 
@@ -277,104 +252,77 @@ public class LootLoggerPlugin extends Plugin {
         lastMenuOptionClicked = event.getMenuOption();
     }
 
-    // =========================
-    //    RESOURCE NODE LOGIC
-    // =========================
     private void handleGatheringGains(int itemId, int qty) {
-        if (client.getLocalPlayer().getAnimation() == -1 && lastActiveAnimation == -1) return;
+        if (sessionId == null) return;
+        if (client.getTickCount() - lastAnimationTick > 5) return;
 
         String sourceName = SOURCE_MAP.getOrDefault(lastActiveAnimation, "Unknown/Pickup");
-        String resourceName = itemManager.getItemComposition(itemId).getName();
         WorldPoint wp = client.getLocalPlayer().getWorldLocation();
 
-        gameMsg(String.format("Resource gained from %s: %s. Qty: %d", sourceName, resourceName, qty));
+        List<DroppedItem> items = List.of(new DroppedItem(
+                itemId,
+                itemManager.getItemComposition(itemId).getName(),
+                qty,
+                0,
+                0
+        ));
 
-        List<DroppedItem> items = List.of(new DroppedItem(itemId, itemManager.getItemComposition(itemId).getName(), qty, (itemManager.getItemPrice(itemId) * qty), itemManager.getItemComposition(itemId).getHaPrice() * qty));
-
-        LootRecord record =
-                LootRecord.builder()
-                        .sessionId(sessionId)
-                        .source(sourceName)
-                        .category("Skilling")
-                        .x(wp.getX())
-                        .y(wp.getY())
-                        .plane(wp.getPlane())
-                        .regionId(wp.getRegionID())
-                        .items(items)
-                        .build();
+        LootRecord record = LootRecord.builder()
+                .sessionId(sessionId)
+                .source(sourceName)
+                .category("Skilling")
+                .x(wp.getX()).y(wp.getY()).plane(wp.getPlane()).regionId(wp.getRegionID())
+                .items(items).build();
 
         executor.execute(() -> lootWriter.queueRecord(record));
     }
 
     @Subscribe
     public void onItemContainerChanged(ItemContainerChanged event) {
+        if (sessionId == null) return;
         WorldPoint wp = client.getLocalPlayer().getWorldLocation();
 
         if (event.getContainerId() == 95 && !hasSyncedBankThisSession) {
             Item[] bankItems = event.getItemContainer().getItems();
-
             List<DroppedItem> snapshotItems = new java.util.ArrayList<>();
             for (Item item : bankItems) {
                 if (item.getId() <= 0) continue;
-
                 int itemId = item.getId();
                 int qty = item.getQuantity();
                 String name = itemManager.getItemComposition(itemId).getName();
-
-                snapshotItems.add(new DroppedItem(
-                        itemId, name, qty,
-                        (itemManager.getItemPrice(itemId) * qty),
-                        (itemManager.getItemComposition(itemId).getHaPrice() * qty)
-                ));
+                snapshotItems.add(new DroppedItem(itemId, name, qty, (itemManager.getItemPrice(itemId) * qty), (itemManager.getItemComposition(itemId).getHaPrice() * qty)));
             }
 
             executor.execute(() -> {
                 ActionRecord snapshotRecord = ActionRecord.builder()
-                        .sessionId(sessionId)
-                        .action("BANK_SNAPSHOT")
+                        .sessionId(sessionId).action("BANK_SNAPSHOT")
                         .x(wp.getX()).y(wp.getY()).plane(wp.getPlane()).regionId(wp.getRegionID())
                         .items(snapshotItems).build();
-
                 lootWriter.queueRecord(snapshotRecord);
             });
-
             hasSyncedBankThisSession = true;
-            gameMsg("LootLogger: Initial Bank Snapshot synced.");
         }
 
         if (event.getContainerId() != 93) return;
 
         boolean isBanking = isBankWidgetOpen;
-
-        if (!isBanking && (client.getTickCount() - lastBankCloseTick <= 2)) {
-            isBanking = true;
-        }
+        if (!isBanking && (client.getTickCount() - lastBankCloseTick <= 2)) isBanking = true;
 
         Item[] currentInventory = event.getItemContainer().getItems();
 
-        // Safe getters (default to -100 so math doesn't accidentally trigger if empty)
         int lastMagicTick = lastXpTickMap.getOrDefault(Skill.MAGIC, -100);
         int lastRangedTick = lastXpTickMap.getOrDefault(Skill.RANGED, -100);
 
-        // A spell or arrow usually updates the inventory on the same tick or 1 tick after the XP drop
         boolean justCastSpell = (client.getTickCount() - lastMagicTick <= 2);
         boolean justFiredRanged = (client.getTickCount() - lastRangedTick <= 2);
 
-        // If we interacted with an NPC in the last 10 ticks, consider us "In Combat"
         boolean inCombat = (client.getTickCount() - lastCombatTick <= 10);
         String combatTarget = inCombat ? currentCombatTarget : "None";
 
         List<InventoryEvent> events = InventoryProcessor.invProcess(
-                previousInventory,
-                currentInventory,
-                isBanking,
-                lastMenuOptionClicked,
-                client.getLocalPlayer().getAnimation(),
-                lastActiveAnimation,
-                justCastSpell,
-                justFiredRanged,
-                combatTarget,
-                itemManager
+                previousInventory, currentInventory, isBanking, lastMenuOptionClicked,
+                client.getLocalPlayer().getAnimation(), lastActiveAnimation,
+                justCastSpell, justFiredRanged, combatTarget, itemManager
         );
 
         for (InventoryEvent invEvent : events) {
@@ -382,128 +330,55 @@ public class LootLoggerPlugin extends Plugin {
             int qty = invEvent.qty;
             String name = itemManager.getItemComposition(itemId).getName();
 
+            // Build the standard item format
+            List<DroppedItem> genericItemList = List.of(new DroppedItem(itemId, name, qty, (itemManager.getItemPrice(itemId) * qty), itemManager.getItemComposition(itemId).getHaPrice() * qty));
+
             switch (invEvent.actionType) {
                 case GATHER_GAIN:
                     handleGatheringGains(itemId, qty);
                     break;
                 case BANK_DEPOSIT:
-                    List<DroppedItem> bankList = List.of(new DroppedItem(itemId, name, qty, (itemManager.getItemPrice(itemId) * qty), itemManager.getItemComposition(itemId).getHaPrice() * qty));
-
-                    ActionRecord bankRecord = ActionRecord.builder()
-                            .sessionId(sessionId).action("BANK_DEPOSIT")
-                            .x(wp.getX()).y(wp.getY()).plane(wp.getPlane()).regionId(wp.getRegionID())
-                            .items(bankList).build();
-
-                    executor.execute(() -> lootWriter.queueRecord(bankRecord));
+                    executor.execute(() -> lootWriter.queueRecord(ActionRecord.builder().sessionId(sessionId).action("BANK_DEPOSIT").x(wp.getX()).y(wp.getY()).plane(wp.getPlane()).regionId(wp.getRegionID()).items(genericItemList).build()));
                     break;
                 case BANK_WITHDRAWAL:
-                    List<DroppedItem> withdrawList = List.of(new DroppedItem(itemId, name, qty, (itemManager.getItemPrice(itemId) * qty), itemManager.getItemComposition(itemId).getHaPrice() * qty));
-
-                    ActionRecord withdrawRecord = ActionRecord.builder()
-                            .sessionId(sessionId).action("BANK_WITHDRAWAL")
-                            .x(wp.getX()).y(wp.getY()).plane(wp.getPlane()).regionId(wp.getRegionID())
-                            .items(withdrawList).build();
-
-                    executor.execute(() -> lootWriter.queueRecord(withdrawRecord));
+                    executor.execute(() -> lootWriter.queueRecord(ActionRecord.builder().sessionId(sessionId).action("BANK_WITHDRAWAL").x(wp.getX()).y(wp.getY()).plane(wp.getPlane()).regionId(wp.getRegionID()).items(genericItemList).build()));
                     break;
                 case CONSUME:
                     if (config.logConsumables()) {
-                        List<DroppedItem> consumeList = List.of(new DroppedItem(itemId, name, qty, (itemManager.getItemPrice(itemId) * qty), itemManager.getItemComposition(itemId).getHaPrice() * qty));
-
-                        ActionRecord consumeRecord = ActionRecord.builder()
-                                .sessionId(sessionId).action("CONSUME")
-                                .x(wp.getX()).y(wp.getY()).plane(wp.getPlane()).regionId(wp.getRegionID())
-                                .items(consumeList).build();
-
-                        executor.execute(() -> lootWriter.queueRecord(consumeRecord));
+                        executor.execute(() -> lootWriter.queueRecord(ActionRecord.builder().sessionId(sessionId).action("CONSUME").x(wp.getX()).y(wp.getY()).plane(wp.getPlane()).regionId(wp.getRegionID()).items(genericItemList).build()));
                     }
                     break;
                 case TAKE:
-                    // check cache to see if we dropped it ourselves
                     int previouslyDroppedQty = droppedItemsCache.getOrDefault(itemId, 0);
-
                     if (previouslyDroppedQty > 0) {
-                        // picked up own dropped item. do not log it.
                         int remainingQty = previouslyDroppedQty - qty;
-                        if (remainingQty <= 0) {
-                            droppedItemsCache.remove(itemId);
-                        } else {
-                            droppedItemsCache.put(itemId, remainingQty);
-                        }
-
-                        gameMsg("Ignored pickup of our own dropped item: " + name);
+                        if (remainingQty <= 0) droppedItemsCache.remove(itemId);
+                        else droppedItemsCache.put(itemId, remainingQty);
                         break;
                     }
-
-                    // it wasn't in the cache
-                    List<DroppedItem> pickupList = List.of(new DroppedItem(itemId, name, qty, (itemManager.getItemPrice(itemId) * qty), itemManager.getItemComposition(itemId).getHaPrice() * qty));
-
-                    ActionRecord pickupRecord = ActionRecord.builder()
-                            .sessionId(sessionId)
-                            .action("PICKUP")
-                            .x(wp.getX()).y(wp.getY()).plane(wp.getPlane()).regionId(wp.getRegionID())
-                            .items(pickupList).build();
-
-                    executor.execute(() -> lootWriter.queueRecord(pickupRecord));
+                    executor.execute(() -> lootWriter.queueRecord(ActionRecord.builder().sessionId(sessionId).action("PICKUP").x(wp.getX()).y(wp.getY()).plane(wp.getPlane()).regionId(wp.getRegionID()).items(genericItemList).build()));
                     break;
                 case DROP:
                     droppedItemsCache.put(itemId, droppedItemsCache.getOrDefault(itemId, 0) + qty);
-
-                    List<DroppedItem> dropList = List.of(new DroppedItem(itemId, name, qty, (itemManager.getItemPrice(itemId) * qty), itemManager.getItemComposition(itemId).getHaPrice() * qty));
-
-                    ActionRecord dropRecord = ActionRecord.builder()
-                            .sessionId(sessionId).action("DROP")
-                            .x(wp.getX()).y(wp.getY()).plane(wp.getPlane()).regionId(wp.getRegionID())
-                            .items(dropList).build();
-
-                    executor.execute(() -> lootWriter.queueRecord(dropRecord));
+                    executor.execute(() -> lootWriter.queueRecord(ActionRecord.builder().sessionId(sessionId).action("DROP").x(wp.getX()).y(wp.getY()).plane(wp.getPlane()).regionId(wp.getRegionID()).items(genericItemList).build()));
                     break;
                 case RANGED_FIRE:
-                    List<DroppedItem> ammoList = List.of(new DroppedItem(itemId, name, qty, (itemManager.getItemPrice(itemId) * qty), itemManager.getItemComposition(itemId).getHaPrice() * qty));
-
-                    ActionRecord ammoRecord = ActionRecord.builder()
-                            .sessionId(sessionId).action("RANGED_FIRE")
-                            .source(invEvent.targetName)
-                            .x(wp.getX()).y(wp.getY()).plane(wp.getPlane()).regionId(wp.getRegionID())
-                            .items(ammoList).build();
-
-                    executor.execute(() -> lootWriter.queueRecord(ammoRecord));
+                    executor.execute(() -> lootWriter.queueRecord(ActionRecord.builder().sessionId(sessionId).action("RANGED_FIRE").source(invEvent.targetName).x(wp.getX()).y(wp.getY()).plane(wp.getPlane()).regionId(wp.getRegionID()).items(genericItemList).build()));
                     break;
                 case SPELL_CAST:
-                    List<DroppedItem> spellList = List.of(new DroppedItem(itemId, name, qty, (itemManager.getItemPrice(itemId) * qty), itemManager.getItemComposition(itemId).getHaPrice() * qty));
-
-                    ActionRecord spellRecord = ActionRecord.builder()
-                            .sessionId(sessionId).action("SPELL_CAST")
-                            .source(invEvent.targetName)
-                            .x(wp.getX()).y(wp.getY()).plane(wp.getPlane()).regionId(wp.getRegionID())
-                            .items(spellList).build();
-
-                    executor.execute(() -> lootWriter.queueRecord(spellRecord));
+                    executor.execute(() -> lootWriter.queueRecord(ActionRecord.builder().sessionId(sessionId).action("SPELL_CAST").source(invEvent.targetName).x(wp.getX()).y(wp.getY()).plane(wp.getPlane()).regionId(wp.getRegionID()).items(genericItemList).build()));
                     break;
                 case COMBAT_CONSUME:
-                    List<DroppedItem> combatConsumeList = List.of(new DroppedItem(itemId, name, qty, (itemManager.getItemPrice(itemId) * qty), itemManager.getItemComposition(itemId).getHaPrice() * qty));
-
-                    ActionRecord combatConsumeRecord = ActionRecord.builder()
-                            .sessionId(sessionId).action("COMBAT_CONSUME")
-                            .source(invEvent.targetName)
-                            .x(wp.getX()).y(wp.getY()).plane(wp.getPlane()).regionId(wp.getRegionID())
-                            .items(combatConsumeList).build();
-
-                    executor.execute(() -> lootWriter.queueRecord(combatConsumeRecord));
+                    executor.execute(() -> lootWriter.queueRecord(ActionRecord.builder().sessionId(sessionId).action("COMBAT_CONSUME").source(invEvent.targetName).x(wp.getX()).y(wp.getY()).plane(wp.getPlane()).regionId(wp.getRegionID()).items(genericItemList).build()));
                     break;
                 case DESTROY:
-                    List<DroppedItem> destroyList = List.of(new DroppedItem(itemId, name, qty, (itemManager.getItemPrice(itemId) * qty), itemManager.getItemComposition(itemId).getHaPrice() * qty));
-
-                    ActionRecord destroyRecord = ActionRecord.builder()
-                            .sessionId(sessionId).action("DESTROY")
-                            .x(wp.getX()).y(wp.getY()).plane(wp.getPlane()).regionId(wp.getRegionID())
-                            .items(destroyList).build();
-
-                    executor.execute(() -> lootWriter.queueRecord(destroyRecord));
+                    executor.execute(() -> lootWriter.queueRecord(ActionRecord.builder().sessionId(sessionId).action("DESTROY").x(wp.getX()).y(wp.getY()).plane(wp.getPlane()).regionId(wp.getRegionID()).items(genericItemList).build()));
+                    break;
+                case SKILLING_CONSUME:
+                    executor.execute(() -> lootWriter.queueRecord(ActionRecord.builder().sessionId(sessionId).action("SKILLING_CONSUME").category("Skilling").source(invEvent.targetName).x(wp.getX()).y(wp.getY()).plane(wp.getPlane()).regionId(wp.getRegionID()).items(genericItemList).build()));
                     break;
             }
         }
-
         previousInventory = currentInventory.clone();
     }
 }
