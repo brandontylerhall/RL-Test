@@ -13,7 +13,7 @@ public class InventoryProcessor {
     );
 
     private static final java.util.Set<String> DESTROY_OPTIONS = java.util.Set.of(
-            "Destroy", "Drop"
+            "Destroy"
     );
 
     private static final java.util.Set<Integer> FIREMAKE_OPTIONS = java.util.Set.of(
@@ -48,9 +48,10 @@ public class InventoryProcessor {
                         events.add(new InventoryEvent(ActionType.BANK_DEPOSIT, oldId, oldQty));
                     } else if (CONSUME_OPTIONS.contains(lastMenuOptionClicked) || FIREMAKE_OPTIONS.contains(lastAnimation)) {
                         events.add(new InventoryEvent(ActionType.CONSUME, oldId, oldQty));
-
                     } else if (DESTROY_OPTIONS.contains(lastMenuOptionClicked)) {
                         events.add(new InventoryEvent(ActionType.DESTROY, oldId, oldQty));
+                    } else if (lastMenuOptionClicked.equals("Drop")) {
+                        events.add(new InventoryEvent(ActionType.DROP, oldId, oldQty));
                     } else if (currentAnimation == -1) {
                         // TODO: handle equips
                         events.add(new InventoryEvent(ActionType.SWAP, oldId, oldQty));
@@ -65,7 +66,7 @@ public class InventoryProcessor {
                     if (isBanking) {
                         events.add(new InventoryEvent(ActionType.BANK_WITHDRAWAL, newId, newQty));
                     } else if (currentAnimation == -1 && lastMenuOptionClicked.equals("Take")) {
-                        events.add(new InventoryEvent(ActionType.TAKE, newId,  newQty));
+                        events.add(new InventoryEvent(ActionType.TAKE, newId, newQty));
                     } else {
                         // It wasn't a swap, and we aren't banking. We gained it!
                         events.add(new InventoryEvent(ActionType.GATHER_GAIN, newId, newQty));
