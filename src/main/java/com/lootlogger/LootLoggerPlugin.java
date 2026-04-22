@@ -55,13 +55,21 @@ public class LootLoggerPlugin extends Plugin {
     private int lastActiveAnimation = -1;
     private String lastMenuOptionClicked = "";
     private Item[] previousInventory = new Item[28];
+    ////////////////////////////////
 
     // BANK TRACKING VARIABLES //
     private boolean isBankWidgetOpen = false;
     private int lastBankCloseTick = -1;
     private boolean hasSyncedBankThisSession = false;
+    ////////////////////////////////
 
+    // COMBAT TRACKING VARIABLES //
     private final java.util.Map<Integer, Integer> droppedItemsCache = new java.util.HashMap<>();
+    private final java.util.Map<Skill, Integer> currentXpMap = new java.util.EnumMap<>(Skill.class);
+    private final java.util.Map<Skill, Integer> lastXpTickMap = new java.util.EnumMap<>(Skill.class);
+    private String currentCombatTarget = "None";
+    private int lastCombatTick = -1;
+    ////////////////////////////////
 
     public void gameMsg(String msg) {
         if (!config.showChatMessages()) {
@@ -150,6 +158,52 @@ public class LootLoggerPlugin extends Plugin {
                 event.getGroupId() == 15) {
             isBankWidgetOpen = false;
             lastBankCloseTick = client.getTickCount();
+        }
+    }
+
+    @Subscribe
+    public void onInteractingChanged(net.runelite.api.events.InteractingChanged event) {
+        if (event.getSource() == client.getLocalPlayer()) {
+            Actor target = event.getTarget();
+            if (target instanceof NPC) {
+                currentCombatTarget = ((NPC) target).getName();
+                lastCombatTick = client.getTickCount();
+            }
+        }
+    }
+
+    @Subscribe
+    public void onStatChanged(net.runelite.api.events.StatChanged event) {
+        Skill skill = event.getSkill();
+        int currentXp = event.getXp();
+
+        if (!currentXpMap.containsKey(skill)) {
+            currentXpMap.put(skill, currentXp);
+            return;
+        }
+
+        int previousXp = currentXpMap.get(skill);
+
+        if (currentXp > previousXp) {
+            int xpGained = currentXp - previousXp;
+            lastXpTickMap.put(skill, client.getTickCount());
+            currentXpMap.put(skill, currentXp);
+
+            if (client.getLocalPlayer() != null) {
+                WorldPoint wp = client.getLocalPlayer().getWorldLocation();
+
+                List<DroppedItem> xpList = List.of(new DroppedItem(0, skill.getName(), xpGained, 0, 0));
+
+                ActionRecord xpRecord = ActionRecord.builder()
+                        .sessionId(sessionId)
+                        .action("XP_GAIN")
+                        .source(currentCombatTarget) // We even know what you were fighting when you got the XP!
+                        .x(wp.getX()).y(wp.getY()).plane(wp.getPlane()).regionId(wp.getRegionID())
+                        .items(xpList)
+                        .build();
+
+                executor.execute(() -> lootWriter.queueRecord(xpRecord));
+            }
         }
     }
 
@@ -278,7 +332,30 @@ public class LootLoggerPlugin extends Plugin {
 
         Item[] currentInventory = event.getItemContainer().getItems();
 
-        List<InventoryEvent> events = InventoryProcessor.invProcess(previousInventory, currentInventory, isBanking, lastMenuOptionClicked, client.getLocalPlayer().getAnimation(), lastActiveAnimation);
+        // Safe getters (default to -100 so math doesn't accidentally trigger if empty)
+        int lastMagicTick = lastXpTickMap.getOrDefault(Skill.MAGIC, -100);
+        int lastRangedTick = lastXpTickMap.getOrDefault(Skill.RANGED, -100);
+
+        // A spell or arrow usually updates the inventory on the same tick or 1 tick after the XP drop
+        boolean justCastSpell = (client.getTickCount() - lastMagicTick <= 2);
+        boolean justFiredRanged = (client.getTickCount() - lastRangedTick <= 2);
+
+        // If we interacted with an NPC in the last 10 ticks, consider us "In Combat"
+        boolean inCombat = (client.getTickCount() - lastCombatTick <= 10);
+        String combatTarget = inCombat ? currentCombatTarget : "None";
+
+        List<InventoryEvent> events = InventoryProcessor.invProcess(
+                previousInventory,
+                currentInventory,
+                isBanking,
+                lastMenuOptionClicked,
+                client.getLocalPlayer().getAnimation(),
+                lastActiveAnimation,
+                justCastSpell,
+                justFiredRanged,
+                combatTarget,
+                itemManager
+        );
 
         for (InventoryEvent invEvent : events) {
             int itemId = invEvent.itemId;
@@ -353,11 +430,56 @@ public class LootLoggerPlugin extends Plugin {
                     droppedItemsCache.put(itemId, droppedItemsCache.getOrDefault(itemId, 0) + qty);
 
                     List<DroppedItem> dropList = List.of(new DroppedItem(itemId, name, qty, (itemManager.getItemPrice(itemId) * qty), itemManager.getItemComposition(itemId).getHaPrice() * qty));
+
                     ActionRecord dropRecord = ActionRecord.builder()
                             .sessionId(sessionId).action("DROP")
                             .x(wp.getX()).y(wp.getY()).plane(wp.getPlane()).regionId(wp.getRegionID())
                             .items(dropList).build();
+
                     executor.execute(() -> lootWriter.queueRecord(dropRecord));
+                    break;
+                case RANGED_FIRE:
+                    List<DroppedItem> ammoList = List.of(new DroppedItem(itemId, name, qty, (itemManager.getItemPrice(itemId) * qty), itemManager.getItemComposition(itemId).getHaPrice() * qty));
+
+                    ActionRecord ammoRecord = ActionRecord.builder()
+                            .sessionId(sessionId).action("RANGED_FIRE")
+                            .source(invEvent.targetName)
+                            .x(wp.getX()).y(wp.getY()).plane(wp.getPlane()).regionId(wp.getRegionID())
+                            .items(ammoList).build();
+
+                    executor.execute(() -> lootWriter.queueRecord(ammoRecord));
+                    break;
+                case SPELL_CAST:
+                    List<DroppedItem> spellList = List.of(new DroppedItem(itemId, name, qty, (itemManager.getItemPrice(itemId) * qty), itemManager.getItemComposition(itemId).getHaPrice() * qty));
+
+                    ActionRecord spellRecord = ActionRecord.builder()
+                            .sessionId(sessionId).action("SPELL_CAST")
+                            .source(invEvent.targetName)
+                            .x(wp.getX()).y(wp.getY()).plane(wp.getPlane()).regionId(wp.getRegionID())
+                            .items(spellList).build();
+
+                    executor.execute(() -> lootWriter.queueRecord(spellRecord));
+                    break;
+                case COMBAT_CONSUME:
+                    List<DroppedItem> combatConsumeList = List.of(new DroppedItem(itemId, name, qty, (itemManager.getItemPrice(itemId) * qty), itemManager.getItemComposition(itemId).getHaPrice() * qty));
+
+                    ActionRecord combatConsumeRecord = ActionRecord.builder()
+                            .sessionId(sessionId).action("COMBAT_CONSUME")
+                            .source(invEvent.targetName)
+                            .x(wp.getX()).y(wp.getY()).plane(wp.getPlane()).regionId(wp.getRegionID())
+                            .items(combatConsumeList).build();
+
+                    executor.execute(() -> lootWriter.queueRecord(combatConsumeRecord));
+                    break;
+                case DESTROY:
+                    List<DroppedItem> destroyList = List.of(new DroppedItem(itemId, name, qty, (itemManager.getItemPrice(itemId) * qty), itemManager.getItemComposition(itemId).getHaPrice() * qty));
+
+                    ActionRecord destroyRecord = ActionRecord.builder()
+                            .sessionId(sessionId).action("DESTROY")
+                            .x(wp.getX()).y(wp.getY()).plane(wp.getPlane()).regionId(wp.getRegionID())
+                            .items(destroyList).build();
+
+                    executor.execute(() -> lootWriter.queueRecord(destroyRecord));
                     break;
             }
         }
