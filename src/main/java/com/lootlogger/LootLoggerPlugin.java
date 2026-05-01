@@ -51,9 +51,13 @@ public class LootLoggerPlugin extends Plugin {
 
     // DEBUG & UI VARIABLES //
     private int lastActiveAnimation = -1;
-    private int lastAnimationTick = -1; // <-- FIX 3: Tracks WHEN the animation happened
+    private int lastAnimationTick = -1;
     private String lastMenuOptionClicked = "";
+    private String lastMenuTargetClicked = "None";
     private Item[] previousInventory = new Item[28];
+
+    // FISHING STATE TRACKING
+    private int lastFishingTick = -1;
 
     // BANK TRACKING VARIABLES //
     private boolean isBankWidgetOpen = false;
@@ -74,16 +78,39 @@ public class LootLoggerPlugin extends Plugin {
     }
 
     private static final java.util.Map<Integer, String> SOURCE_MAP = java.util.Map.ofEntries(
-            java.util.Map.entry(879, "Woodcutting"), // Bronze axe
-            java.util.Map.entry(877, "Woodcutting"), // Iron axe
-            java.util.Map.entry(875, "Woodcutting"), // Steel axe
-            java.util.Map.entry(625, "Mining"),      // Bronze pick
-            java.util.Map.entry(626, "Mining"),      // Iron pick
-            java.util.Map.entry(627, "Mining"),      // Steel pick
-            java.util.Map.entry(621, "Fishing"),     // Small net fishing
-//            java.util.Map.entry(618, "Fishing"),     // Harpoon fishing
-            java.util.Map.entry(618, "Fishing")
+            // Woodcutting
+            java.util.Map.entry(879, "Woodcutting"),
+            java.util.Map.entry(877, "Woodcutting"),
+            java.util.Map.entry(875, "Woodcutting"),
+            java.util.Map.entry(873, "Woodcutting"),
+            java.util.Map.entry(871, "Woodcutting"),
+            java.util.Map.entry(869, "Woodcutting"),
+            java.util.Map.entry(2846, "Woodcutting"),
 
+            // Mining
+            java.util.Map.entry(625, "Mining"),
+            java.util.Map.entry(626, "Mining"),
+            java.util.Map.entry(627, "Mining"),
+            java.util.Map.entry(628, "Mining"),
+            java.util.Map.entry(629, "Mining"),
+            java.util.Map.entry(624, "Mining"),
+            java.util.Map.entry(7139, "Mining"),
+            java.util.Map.entry(6752, "Mining"),
+            java.util.Map.entry(6753, "Mining"),
+
+            // Fishing - Improved
+            java.util.Map.entry(621, "Fishing"),  // Net fishing
+            java.util.Map.entry(618, "Fishing"),  // Harpoon
+            java.util.Map.entry(619, "Fishing"),  // Lobster pot / Cage  ← Added this
+            java.util.Map.entry(622, "Fishing"),  // Fly fishing
+            java.util.Map.entry(620, "Fishing"),  // Rod fishing
+            java.util.Map.entry(623, "Fishing"),  // Barbarian rod
+
+            // Cooking
+            java.util.Map.entry(896, "Cooking"),
+            java.util.Map.entry(897, "Cooking"),
+            java.util.Map.entry(883, "Cooking"),
+            java.util.Map.entry(3705, "Cooking")
     );
 
     @Override
@@ -100,20 +127,12 @@ public class LootLoggerPlugin extends Plugin {
         }
 
         if (event.getGameState() == GameState.LOGGED_IN) {
-            // FIX: Only initialize the map if it's empty to prevent "Login XP" drops
-            for (Skill skill : Skill.values()) {
-                if (!currentXpMap.containsKey(skill)) {
-                    currentXpMap.put(skill, client.getSkillExperience(skill));
-                }
-            }
-
             if (sessionId == null) {
                 sessionId = java.util.UUID.randomUUID().toString();
                 ActionRecord startRecord = ActionRecord.builder()
                         .sessionId(sessionId).action("SESSION_START")
                         .x(0).y(0).plane(0).regionId(0)
                         .items(List.of()).build();
-                // We use executor for start to keep login snappy
                 executor.execute(() -> lootWriter.queueRecord(startRecord));
             }
         } else if (event.getGameState() == GameState.LOGIN_SCREEN) {
@@ -157,12 +176,15 @@ public class LootLoggerPlugin extends Plugin {
 
     @Subscribe
     public void onWidgetLoaded(net.runelite.api.events.WidgetLoaded event) {
-        if (event.getGroupId() == 12 || event.getGroupId() == 15) isBankWidgetOpen = true;
+        // 12 = Bank, 15 = Bank Pin, 192 = Deposit Box
+        if (event.getGroupId() == 12 || event.getGroupId() == 15 || event.getGroupId() == 192) {
+            isBankWidgetOpen = true;
+        }
     }
 
     @Subscribe
     public void onWidgetClosed(net.runelite.api.events.WidgetClosed event) {
-        if (event.getGroupId() == 12 || event.getGroupId() == 15) {
+        if (event.getGroupId() == 12 || event.getGroupId() == 15 || event.getGroupId() == 192) {
             isBankWidgetOpen = false;
             lastBankCloseTick = client.getTickCount();
         }
@@ -202,27 +224,30 @@ public class LootLoggerPlugin extends Plugin {
     public void onStatChanged(net.runelite.api.events.StatChanged event) {
         Skill skill = event.getSkill();
         int currentXp = event.getXp();
-        int previousXp = currentXpMap.getOrDefault(skill, currentXp);
 
-        if (currentXp > previousXp) {
+        Integer previousXp = currentXpMap.get(skill);
+
+        currentXpMap.put(skill, currentXp);
+
+        if (previousXp != null && previousXp > 0 && currentXp > previousXp) {
             int xpGained = currentXp - previousXp;
+
+            if (xpGained > 500000) return;
+
             lastXpTickMap.put(skill, client.getTickCount());
-            currentXpMap.put(skill, currentXp);
 
             if (client.getLocalPlayer() != null && sessionId != null) {
                 WorldPoint wp = client.getLocalPlayer().getWorldLocation();
 
                 String skillName = skill.getName();
                 boolean isCombat = COMBAT_SKILLS.contains(skillName);
-
-                // FIX 1: Make sure we only tag the monster if we fought it recently!
                 boolean inCombatState = (client.getTickCount() - lastCombatTick <= 10);
-                String targetToLog = inCombatState ? currentCombatTarget : "None";
 
+                String targetToLog = inCombatState ? currentCombatTarget : "None";
                 String category = isCombat ? "Combat" : "Skilling";
                 String source = isCombat ? targetToLog : skillName;
 
-                List<DroppedItem> xpList = List.of(new DroppedItem(-1, "XP_REWARD", xpGained, 0, 0));
+                List<DroppedItem> xpList = List.of(new DroppedItem(-1, skillName, xpGained, 0, 0));
 
                 ActionRecord xpRecord = ActionRecord.builder()
                         .sessionId(sessionId)
@@ -251,6 +276,7 @@ public class LootLoggerPlugin extends Plugin {
 
         LootRecord record = LootRecord.builder()
                 .sessionId(sessionId)
+                .action("NPC_DROP")
                 .source(sourceName)
                 .category("Combat")
                 .x(wp.getX()).y(wp.getY()).plane(wp.getPlane()).regionId(wp.getRegionID())
@@ -262,36 +288,59 @@ public class LootLoggerPlugin extends Plugin {
     @Subscribe
     public void onAnimationChanged(AnimationChanged event) {
         if (event.getActor() != client.getLocalPlayer()) return;
+
         int animId = client.getLocalPlayer().getAnimation();
+
         if (animId != -1) {
             lastActiveAnimation = animId;
-            lastAnimationTick = client.getTickCount(); // Store exactly when it happened
+            lastAnimationTick = client.getTickCount();
         }
     }
 
     @Subscribe
     public void onMenuOptionClicked(MenuOptionClicked event) {
         lastMenuOptionClicked = event.getMenuOption();
+        lastMenuTargetClicked = net.runelite.client.util.Text.removeTags(event.getMenuTarget());
     }
 
-    private void handleGatheringGains(int itemId, int qty) {
+    private void handleGatheringGains(int itemId, int qty, String sourceName) {
         if (sessionId == null) return;
-        if (client.getTickCount() - lastAnimationTick > 5) return;
 
-        // Determine which skill this belongs to based on the animation
-        String skillName = SOURCE_MAP.getOrDefault(lastActiveAnimation, "Unknown/Pickup");
-        String itemName = itemManager.getItemComposition(itemId).getName();
+        int currentAnim = client.getLocalPlayer() != null ? client.getLocalPlayer().getAnimation() : -1;
+
+        boolean isFishingAnim = currentAnim == 619 || currentAnim == 618 || currentAnim == 621 ||
+                lastActiveAnimation == 619 || lastActiveAnimation == 618 || lastActiveAnimation == 621;
+
+        String itemName = itemManager.getItemComposition(itemId).getName().toLowerCase();
+
+        // CRITICAL: Do NOT log cooked or burnt food as GATHER_GAIN from Fishing
+        if (itemName.contains("burnt") ||
+                (itemName.contains("lobster") && !itemName.contains("raw")) ||
+                (itemName.contains("shrimp") && !itemName.contains("raw")) ||
+                (itemName.contains("trout") && !itemName.contains("raw")) ||
+                (itemName.contains("salmon") && !itemName.contains("raw"))) {
+            return;
+        }
+
+        String cleanItemName = itemManager.getItemComposition(itemId).getName();
+
         WorldPoint wp = client.getLocalPlayer().getWorldLocation();
 
-        // Source = "Fishing", Item Name = "Raw trout"
-        List<DroppedItem> items = List.of(new DroppedItem(itemId, itemName, qty, 0, 0));
+        List<DroppedItem> items = List.of(new DroppedItem(itemId, cleanItemName, qty, 0, 0));
+
+        // Ask the SOURCE_MAP what skill matches our current animation.
+        // If it doesn't know, default it to "Unknown/Pickup"
+        String resolvedSource = SOURCE_MAP.getOrDefault(lastActiveAnimation, "Unknown/Pickup");
 
         LootRecord record = LootRecord.builder()
                 .sessionId(sessionId)
-                .source(skillName)
+                .action("GATHER_GAIN")
+                .source(sourceName)
+                .source(resolvedSource)
                 .category("Skilling")
                 .x(wp.getX()).y(wp.getY()).plane(wp.getPlane()).regionId(wp.getRegionID())
-                .items(items).build();
+                .items(items)
+                .build();
 
         executor.execute(() -> lootWriter.queueRecord(record));
     }
@@ -341,7 +390,7 @@ public class LootLoggerPlugin extends Plugin {
 
         // Banking state detection
         boolean isBanking = isBankWidgetOpen;
-        if (!isBanking && (client.getTickCount() - lastBankCloseTick <= 2)) isBanking = true;
+        if (!isBanking && (client.getTickCount() - lastBankCloseTick <= 5)) isBanking = true;
 
         Item[] currentInventory = inventoryContainer.getItems();
 
@@ -361,6 +410,7 @@ public class LootLoggerPlugin extends Plugin {
                 currentInventory,
                 isBanking,
                 lastMenuOptionClicked,
+                lastMenuTargetClicked,
                 client.getLocalPlayer().getAnimation(),
                 lastActiveAnimation,
                 justCastSpell,
@@ -378,7 +428,7 @@ public class LootLoggerPlugin extends Plugin {
 
             switch (invEvent.actionType) {
                 case GATHER_GAIN:
-                    handleGatheringGains(itemId, qty);
+                    handleGatheringGains(itemId, qty, invEvent.targetName);
                     break;
                 case BANK_DEPOSIT:
                     executor.execute(() -> lootWriter.queueRecord(ActionRecord.builder().sessionId(sessionId).action("BANK_DEPOSIT").x(wp.getX()).y(wp.getY()).plane(wp.getPlane()).regionId(wp.getRegionID()).items(genericItemList).build()));

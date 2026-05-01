@@ -23,6 +23,7 @@ public class InventoryProcessor {
             Item[] currentInventory,
             boolean isBanking,
             String lastMenuOptionClicked,
+            String lastMenuTargetClicked,
             int currentAnimation,
             int lastAnimation,
             boolean justCastSpell,
@@ -44,30 +45,48 @@ public class InventoryProcessor {
 
             if (newQty < oldQty) {
                 int qtyLost = oldQty - newQty;
-                String itemName = itemManager.getItemComposition(itemId).getName().toLowerCase();
+                String itemNameLower = itemManager.getItemComposition(itemId).getName().toLowerCase();
 
-                boolean isRune = itemName.contains("rune");
-                boolean isAmmo = itemName.matches("(?i).*\\b(arrow|arrows|bolt|bolts|dart|darts|javelin|javelins)\\b.*");
+                boolean isRune = itemNameLower.contains("rune");
+                boolean isAmmo = itemNameLower.matches("(?i).*\\b(arrow|arrows|bolt|bolts|dart|darts|javelin|javelins)\\b.*");
                 boolean inCombat = !combatTarget.equals("None");
 
                 if (isBanking) {
                     events.add(new InventoryEvent(itemId, qtyLost, ActionType.BANK_DEPOSIT, "Bank"));
-                } else if (DESTROY_OPTIONS.contains(lastMenuOptionClicked)) {
+                }
+                else if (DESTROY_OPTIONS.contains(lastMenuOptionClicked)) {
                     events.add(new InventoryEvent(itemId, qtyLost, ActionType.DESTROY, "None"));
-                } else if ("Drop".equals(lastMenuOptionClicked)) {
-                    events.add(new InventoryEvent(itemId, qtyLost, ActionType.DROP, "None"));
-                } else if (isRune && justCastSpell) {
+                }
+                else if ("Drop".equals(lastMenuOptionClicked)) {
+                    // Strong cooking detection for raw ingredients
+                    if (itemNameLower.contains("raw ") &&
+                            (itemNameLower.contains("lobster") || itemNameLower.contains("shrimp") ||
+                                    itemNameLower.contains("trout") || itemNameLower.contains("salmon") ||
+                                    itemNameLower.contains("tuna") || itemNameLower.contains("swordfish"))) {
+
+                        events.add(new InventoryEvent(itemId, qtyLost, ActionType.SKILLING_CONSUME, "Cooking"));
+                    }
+                    else {
+                        events.add(new InventoryEvent(itemId, qtyLost, ActionType.DROP, "None"));
+                    }
+                }
+                else if (isRune && justCastSpell) {
                     events.add(new InventoryEvent(itemId, qtyLost, ActionType.SPELL_CAST, combatTarget));
-                } else if (isAmmo && justFiredRanged) {
+                }
+                else if (isAmmo && justFiredRanged) {
                     events.add(new InventoryEvent(itemId, qtyLost, ActionType.RANGED_FIRE, combatTarget));
-                } else if (inCombat && (CONSUME_OPTIONS.contains(lastMenuOptionClicked) || currentAnimation != -1)) {
+                }
+                else if (inCombat && (CONSUME_OPTIONS.contains(lastMenuOptionClicked) || currentAnimation != -1)) {
                     events.add(new InventoryEvent(itemId, qtyLost, ActionType.COMBAT_CONSUME, combatTarget));
-                } else if (FIREMAKE_OPTIONS.contains(lastAnimation)) {
+                }
+                else if (FIREMAKE_OPTIONS.contains(lastAnimation)) {
                     events.add(new InventoryEvent(itemId, qtyLost, ActionType.SKILLING_CONSUME, "Firemaking"));
-                } else if (CONSUME_OPTIONS.contains(lastMenuOptionClicked)) {
+                }
+                else if (CONSUME_OPTIONS.contains(lastMenuOptionClicked)) {
                     events.add(new InventoryEvent(itemId, qtyLost, ActionType.CONSUME, "None"));
-                } else {
-                    events.add(new InventoryEvent(itemId, qtyLost, ActionType.CONSUME, "None"));
+                }
+                else {
+                    events.add(new InventoryEvent(itemId, qtyLost, ActionType.DROP, "None"));
                 }
             }
         }
@@ -84,9 +103,21 @@ public class InventoryProcessor {
 
                 if (isBanking) {
                     events.add(new InventoryEvent(itemId, qtyGained, ActionType.BANK_WITHDRAWAL, "Bank"));
-                } else if ("Take".equals(lastMenuOptionClicked)) {
+                }
+                // Strong Fishing detection
+                else if (lastAnimation == 619 || lastAnimation == 618 || lastAnimation == 621 ||
+                        currentAnimation == 619 || currentAnimation == 618 || currentAnimation == 621) {
+                    events.add(new InventoryEvent(itemId, qtyGained, ActionType.GATHER_GAIN, "None"));
+                }
+                // Default skilling gain
+                else if (lastMenuOptionClicked == null ||
+                        (!"Take".equals(lastMenuOptionClicked) && !"Drop".equals(lastMenuOptionClicked))) {
+                    events.add(new InventoryEvent(itemId, qtyGained, ActionType.GATHER_GAIN, lastMenuTargetClicked));
+                }
+                else if ("Take".equals(lastMenuOptionClicked)) {
                     events.add(new InventoryEvent(itemId, qtyGained, ActionType.TAKE, "None"));
-                } else {
+                }
+                else {
                     events.add(new InventoryEvent(itemId, qtyGained, ActionType.GATHER_GAIN, "None"));
                 }
             }

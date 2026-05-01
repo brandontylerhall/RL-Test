@@ -14,6 +14,7 @@ public class LootRecord {
     @Builder.Default
     private String timestamp = Instant.now().toString();
 
+    private String action;
     private String source;
     private String category;
     private int x;
